@@ -1,0 +1,120 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - run: uv run --python ${{ matrix.python }} pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - run: uvx ruff@0.13.0 check src tests examples
+
+  chroma-versions:
+    strategy:
+      fail-fast: false
+      matrix:
+        chromadb: ["0.6.3", "1.0.21", "1.2.2", "1.4.1", "1.5.9"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - run: uv run --isolated --no-project --python 3.12 --with "chromadb==${{ matrix.chromadb }}" --with pytest --with-editable . pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - run: uv build
+      - name: install the wheel without chromadb and scan
+        run: |
+          uv venv /tmp/clean && uv pip install --python /tmp/clean dist/*.whl
+          /tmp/clean/bin/forgetproof --version
+          /tmp/clean/bin/forgetproof scan . && exit 1 || test $? -eq 2  # unsupported target -> exit 2
+
+  postgres:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["pgvector/pgvector:0.8.7-pg16", "pgvector/pgvector:0.8.7-pg17", "pgvector/pgvector:0.8.7-pg18"]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_PASSWORD: fp-ci-only-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      FORGETPROOF_TEST_PG_URL: postgresql://postgres:fp-ci-only-secret@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - run: uv run --python 3.12 pytest -q tests/test_postgres.py
+      - name: leaky database for the action
+        run: |
+          PGPASSWORD=fp-ci-only-secret psql -h localhost -U postgres -c "create database agent"
+          uv run --python 3.12 python examples/make_leaky_pgvector.py postgresql://postgres:fp-ci-only-secret@localhost:5432/agent
+      - id: leaky
+        uses: ./
+        with:
+          path: postgresql://postgres:fp-ci-only-secret@localhost:5432/agent
+          canaries: user3@example.com
+          fail-on-residue: "false"
+      - name: action reported the residue
+        env:
+          CLEAN: ${{ steps.leaky.outputs.clean }}
+          CODE: ${{ steps.leaky.outputs.exit-code }}
+        run: test "$CLEAN" = false && test "$CODE" = 1
+
+  action:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - name: a leaky Chroma store and a clean SQLite file
+        shell: bash
+        run: |
+          uv run --python 3.12 python examples/make_leaky_store.py leaky_memory
+          uv run --python 3.12 python -c "import sqlite3; c = sqlite3.connect('clean.db'); c.execute('create table t (x)'); c.execute(\"insert into t values ('hi')\"); c.commit()"
+      - id: leaky
+        uses: ./
+        with:
+          path: leaky_memory
+          canaries: user3@example.com
+          fail-on-residue: "false"
+      - id: clean
+        uses: ./
+        with:
+          path: clean.db
+      - name: outputs are right
+        shell: bash
+        env:
+          LEAKY: ${{ steps.leaky.outputs.clean }}
+          LEAKY_CODE: ${{ steps.leaky.outputs.exit-code }}
+          CLEAN: ${{ steps.clean.outputs.clean }}
+        run: test "$LEAKY" = false && test "$LEAKY_CODE" = 1 && test "$CLEAN" = true

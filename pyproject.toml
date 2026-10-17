@@ -1,0 +1,56 @@
+[project]
+name = "forgetproof"
+version = "0.1.0"
+description = "Detect and erase deleted records left on disk by Chroma, Postgres/pgvector and SQLite stores, with signed receipts."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "StellarMinds", email = "hello@stellarminds.ai" }
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Security",
+]
+keywords = ["ai-agents", "agent-memory", "vector-database", "gdpr", "right-to-erasure", "chroma", "pgvector", "postgres", "privacy"]
+dependencies = [
+    "cryptography>=42",
+]
+
+[project.urls]
+Homepage = "https://github.com/Sharathvc23/forgetproof"
+Issues = "https://github.com/Sharathvc23/forgetproof/issues"
+Changelog = "https://github.com/Sharathvc23/forgetproof/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+chroma = ["chromadb>=1.0"]
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+forgetproof = "forgetproof.cli:main"
+
+[dependency-groups]
+dev = [
+    "chromadb>=1.5.9",
+    "psycopg[binary]>=3.1",
+    "pgserver>=0.1.4; python_version < '3.13'",  # a throwaway Postgres + pgvector for tests
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

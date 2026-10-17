@@ -1,0 +1,16 @@
+name: Support another store
+description: Ask for a vector database or memory layer to be scanned
+labels: [new-store]
+body:
+  - type: input
+    id: store
+    attributes:
+      label: Store and version
+      placeholder: pgvector 0.8 / LanceDB 0.20 / Mem0 with Qdrant
+    validations:
+      required: true
+  - type: textarea
+    id: residue
+    attributes:
+      label: Where does deleted data survive?
+      description: Anything you know about how it deletes, compacts or persists.

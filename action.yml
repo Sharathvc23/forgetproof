@@ -1,0 +1,77 @@
+name: forgetproof scan
+description: Fail CI when a Chroma, Postgres/pgvector or SQLite store still holds deleted records on disk.
+author: StellarMinds
+branding:
+  icon: trash-2
+  color: red
+
+inputs:
+  path:
+    description: >
+      Store to scan: a Chroma persist directory, a SQLite file, or a postgresql:// URL.
+      Pass a database URL from a secret, and keep the password in it or in PGPASSWORD.
+    required: true
+  canaries:
+    description: >
+      Values that must be gone, one per line (for example the emails of users who asked to be
+      forgotten). Pass them from a secret. They are never printed; results name them by number.
+    required: false
+    default: ""
+  fail-on-residue:
+    description: Fail the step when deleted data is found or the scan is incomplete.
+    required: false
+    default: "true"
+  python-version:
+    description: Python used to run forgetproof.
+    required: false
+    default: "3.12"
+
+outputs:
+  clean:
+    description: '"true" when the scan completed and found no deleted data, otherwise "false".'
+    value: ${{ steps.scan.outputs.clean }}
+  exit-code:
+    description: forgetproof's exit code (0 clean, 1 residue or incomplete, 2 error).
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      with:
+        enable-cache: false
+    - id: scan
+      shell: bash
+      env:
+        FP_PATH: ${{ inputs.path }}
+        FP_CANARIES: ${{ inputs.canaries }}
+        FP_FAIL: ${{ inputs.fail-on-residue }}
+        FP_PYTHON: ${{ inputs.python-version }}
+      run: |
+        # Inputs arrive as environment variables, never pasted into this script.
+        set +e  # GitHub runs this with -e; we need forgetproof's exit code, not an early exit
+        set -uo pipefail
+        args=(scan "$FP_PATH" --format markdown)
+        canary_file=""
+        if [ -n "$FP_CANARIES" ]; then
+          canary_file="$(mktemp)"
+          chmod 600 "$canary_file"
+          printf '%s\n' "$FP_CANARIES" > "$canary_file"
+          args+=(--canary-file "$canary_file")
+        fi
+        # Run the forgetproof that ships with this action version, so @v1.2.3 means exactly that.
+        uvx --quiet --python "$FP_PYTHON" --from "$GITHUB_ACTION_PATH" --with "psycopg[binary]>=3.1" \
+          forgetproof "${args[@]}" > "$RUNNER_TEMP/forgetproof.md"
+        code=$?
+        [ -n "$canary_file" ] && rm -f "$canary_file"
+        cat "$RUNNER_TEMP/forgetproof.md" | tee -a "$GITHUB_STEP_SUMMARY"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$code" -eq 0 ]; then echo "clean=true" >> "$GITHUB_OUTPUT"; else echo "clean=false" >> "$GITHUB_OUTPUT"; fi
+        if [ "$code" -ge 2 ]; then
+          echo "::error title=forgetproof::scan failed (exit $code); see the log above"
+          exit "$code"
+        fi
+        if [ "$code" -ne 0 ] && [ "$FP_FAIL" = "true" ]; then
+          echo "::error title=forgetproof::deleted data is still on disk (or the scan was incomplete)"
+          exit 1
+        fi
