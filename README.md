@@ -96,25 +96,57 @@ A receipt is an operator attestation that anyone can recheck, not a third-party 
 ## MCP server
 
 Exposes forgetproof to agents over MCP (stdio). The operator names the stores; the agent can only
-refer to them by name.
+refer to them by name, and can never name a value to look up or erase — it has no `canaries`
+parameter anywhere. The one value a subject-scoped call acts on comes from `--subject-file`, a
+file the operator's application keeps current with whoever is signed in; the agent cannot set it.
 
 ```bash
-forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent [--allow-fix]
+forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent \
+  --allow-fix --subject-file /run/forgetproof/current-user
 claude mcp add forgetproof -- forgetproof mcp --store memory=/srv/agent/chroma_dir   # Claude Code
 ```
 
-| Tool | Effect |
-|---|---|
-| `list_stores` | Configured store names and whether fix is enabled |
-| `scan_store(store_name, canaries)` | Findings as counts, canary results by index |
-| `plan_fix(store_name)` | Steps `fix` would take; changes nothing |
-| `fix_store(store_name, canaries)` | Only with `--allow-fix`. Fixes, rescans, writes a receipt, returns its id |
-| `get_receipt(receipt_id)` / `verify_receipt(receipt_id)` | Receipt JSON; signature, file-hash and rescan check |
+| Tool | Needs | Effect |
+|---|---|---|
+| `list_stores` | – | Configured store names, and whether fix and a subject are configured |
+| `scan_store(store_name)` | – | Findings as counts only: never whether a specific value is present |
+| `plan_fix(store_name)` | – | Steps `fix` would take; changes nothing |
+| `check_if_forgotten(store_name)` | `--subject-file` | Whether *the current subject* still has recoverable data |
+| `forget_me(store_name)` | `--subject-file`, `--allow-fix` | Erases the current subject's data; may come back `queued` (below) |
+| `fix_store(store_name)` | `--allow-fix` | Erases everything the scan found, with no value argument |
+| `get_receipt` / `verify_receipt(receipt_id)` | – | Receipt JSON; signature, file-hash and rescan check |
 
-Responses never contain canary values or samples, redacted or not. Calls on the same store are
-serialized. Chroma `fix_store` returns an error while the application has the store open, so run it
-in a maintenance window. Receipts go to `~/.config/forgetproof/receipts` (`--receipts DIR`). Pass the
-Postgres password through `PGPASSWORD` in the server's environment.
+Responses never contain values or samples, redacted or not. Calls on the same store are serialized,
+and subject-scoped calls are rate-limited per store. On Chroma, `forget_me` and `fix_store` return an
+error, and `forget_me` queues the erasure instead of failing, while the application has the store
+open; call `forgetproof run-queued` (below) at the application's next start, before it reopens the
+store, to finish it — the server also does this for its configured stores on its own startup.
+Receipts go to `~/.config/forgetproof/receipts` (`--receipts DIR`). Pass the Postgres password
+through `PGPASSWORD` in the server's environment.
+
+## Embedding directly
+
+For an application with its own delete flow, call `forget()` instead of running a server:
+
+```python
+from forgetproof import forget
+
+receipt = forget.forget(store, subject=user.email)   # erases now, or...
+# forget.Queued(target=..., queued_at=...) on Chroma if the app still has the store open
+
+# at the app's next start, before it reopens the store:
+for receipt in forget.run_queued(store):
+    ...
+```
+
+```bash
+forgetproof forget ./chroma_dir --subject user3@example.com   # or "queued: …" if Chroma is open
+forgetproof run-queued ./chroma_dir --receipts-dir ./receipts  # call before reopening the store
+```
+
+A queued request is encrypted at rest under a local key (`~/.config/forgetproof/queue` by default)
+and deleted the moment it's drained, so the queue is never a durable list of who asked to be
+forgotten.
 
 ## GitHub Action
 

@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, postgres, receipt
+from . import __version__, forget as forget_mod, postgres, receipt
 from .fixer import FixError, Options, fix, plan
 from .report import Report
 from .scanner import UnsupportedStore, scan
@@ -184,6 +184,39 @@ def cmd_key(args) -> int:
     return EXIT_CLEAN
 
 
+def cmd_forget(args) -> int:
+    target = _target(args.path)
+    result = forget_mod.forget(target, args.subject, options=Options(allow_upgrade=args.allow_upgrade))
+    if isinstance(result, forget_mod.Queued):
+        print(f"{bold('queued')}: {result.target} is open elsewhere right now (Chroma can't be rewritten while "
+              f"that's true).\nRun `forgetproof run-queued {args.path}` once nothing has it open, "
+              "typically at your app's next start before it reopens the store.")
+        return EXIT_RESIDUE
+    out = Path(args.receipt or f"forgetproof-receipt-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json")
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    if result["verdict"] == "CLEAN":
+        print(green(f"✓ Erased. Signed receipt: {out}"))
+    else:
+        print(red(f"canary still on disk after fix — see {out}"))
+    return EXIT_CLEAN if result["verdict"] == "CLEAN" else EXIT_RESIDUE
+
+
+def cmd_run_queued(args) -> int:
+    target = _target(args.path)
+    receipts = forget_mod.run_queued(target, options=Options(allow_upgrade=args.allow_upgrade))
+    if not receipts:
+        print(dim("nothing queued for this store."))
+        return EXIT_CLEAN
+    out_dir = Path(args.receipts_dir) if args.receipts_dir else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i, rec in enumerate(receipts, 1):
+        path = out_dir / f"forgetproof-receipt-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{i}.json"
+        path.write_text(json.dumps(rec, indent=2) + "\n")
+        print(f"  • {rec['verdict']}: {path}")
+    print(green(f"✓ {len(receipts)} queued erasure(s) finished."))
+    return EXIT_CLEAN
+
+
 def cmd_mcp(args) -> int:
     try:
         from . import mcp_server
@@ -192,7 +225,9 @@ def cmd_mcp(args) -> int:
         return EXIT_ERROR
     stores = [mcp_server.parse_store(spec) for spec in args.store]
     receipts = Path(args.receipts).expanduser().resolve() if args.receipts else None
-    mcp_server.build(stores, allow_fix=args.allow_fix, receipts_dir=receipts).run()
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    mcp_server.build(stores, allow_fix=args.allow_fix, receipts_dir=receipts,
+                      subject_file=args.subject_file, queue_dir=queue_dir).run()
     return EXIT_CLEAN
 
 
@@ -232,6 +267,21 @@ def main(argv: list[str] | None = None) -> int:
                    help="let the installed chromadb upgrade an older store to its own format")
     f.set_defaults(func=cmd_fix)
 
+    g = sub.add_parser("forget", help="erase one subject's data now, or queue it if the store can't be rewritten yet")
+    g.add_argument("path")
+    g.add_argument("--subject", required=True, metavar="VALUE", help="the value to erase, e.g. a user's email")
+    g.add_argument("--receipt", metavar="FILE", help="where to write the receipt")
+    g.add_argument("--allow-upgrade", action="store_true",
+                   help="let the installed chromadb upgrade an older store to its own format")
+    g.set_defaults(func=cmd_forget)
+
+    rq = sub.add_parser("run-queued", help="finish forget() calls queued for a store (run before reopening it)")
+    rq.add_argument("path")
+    rq.add_argument("--receipts-dir", metavar="DIR", help="where to write the receipts (default: current directory)")
+    rq.add_argument("--allow-upgrade", action="store_true",
+                    help="let the installed chromadb upgrade an older store to its own format")
+    rq.set_defaults(func=cmd_run_queued)
+
     v = sub.add_parser("verify", help="check a receipt's signature, optionally against the store")
     v.add_argument("receipt")
     v.add_argument("--against", metavar="PATH", help="rescan this store and compare")
@@ -244,8 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("mcp", help="run an MCP server (stdio) that lets an agent scan, fix and verify named stores")
     m.add_argument("--store", action="append", required=True, metavar="NAME=PATH_OR_URL",
                    help="a store the agent may use (repeatable); the agent only ever sees NAME")
-    m.add_argument("--allow-fix", action="store_true", help="offer the fix_store tool (off by default)")
-    m.add_argument("--receipts", metavar="DIR", help="where fix_store writes receipts (default: next to the signing key)")
+    m.add_argument("--allow-fix", action="store_true", help="offer fix_store and forget_me (off by default)")
+    m.add_argument("--receipts", metavar="DIR", help="where receipts are written (default: next to the signing key)")
+    m.add_argument("--subject-file", metavar="FILE",
+                   help="file holding the current user's identity, kept current by your application; "
+                        "enables check_if_forgotten and forget_me, scoped to that value only")
+    m.add_argument("--queue-dir", metavar="DIR", help="where forget_me queues a Chroma erasure it can't do yet")
     m.set_defaults(func=cmd_mcp)
 
     args = p.parse_args(argv)
