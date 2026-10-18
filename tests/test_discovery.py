@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from conftest import make_sqlite
@@ -131,6 +132,7 @@ def test_cli_init_reports_nothing_found_without_asking(tmp_path, monkeypatch):
     assert not discovery.config_path(tmp_path).exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="the writability check is POSIX-only, documented in discovery.py")
 def test_find_config_rejects_a_world_writable_config_file(tmp_path):
     path = discovery.write_config(tmp_path, [])
     path.chmod(0o666)
