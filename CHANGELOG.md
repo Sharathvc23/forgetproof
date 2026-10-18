@@ -20,7 +20,10 @@ Initial release.
   and pins them by name to `.forgetproof.json`. Every command that takes a store accepts a pinned
   name in place of a path or URL, found by walking up from the current directory. A Postgres entry
   records only an environment variable's name, never its URL. Resolving a pinned entry refuses it
-  if what's there no longer matches what was pinned.
+  if what's there no longer matches what was pinned, points outside the config's own directory, or
+  (Postgres) names an unrecognised environment variable. The upward search for a config file only
+  trusts one this user owns and alone can write, and stops at the first ancestor directory this
+  user doesn't own — so one planted in a shared directory above the current one is never used.
 - The Ed25519 signing key and the queue's encryption key can be kept in the OS keychain instead of a
   file, with `pip install 'forgetproof[keyring]'` and `FORGETPROOF_USE_KEYRING=1` (opt-in; an
   existing file key is never migrated automatically).

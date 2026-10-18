@@ -37,7 +37,7 @@ def _target(arg: str) -> Path | str:
         if config is not None:
             pinned = discovery.load_config(config).get(arg)
             if pinned is not None:
-                return discovery.resolve(pinned)
+                return discovery.resolve(pinned, root=config.parent)
     return path.resolve()
 
 
@@ -256,7 +256,7 @@ def cmd_mcp(args) -> int:
     stores = [mcp_server.parse_store(spec) for spec in args.store]
     if args.config:
         config = Path(args.config).expanduser().resolve()
-        stores += [mcp_server.Store(name, discovery.resolve(found))
+        stores += [mcp_server.Store(name, discovery.resolve(found, root=config.parent))
                    for name, found in discovery.load_config(config).items()]
     if not stores:
         print(red("error: no stores given — pass --store or --config"), file=sys.stderr)

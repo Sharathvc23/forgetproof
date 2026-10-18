@@ -40,6 +40,14 @@ never contains a password and a rotated credential needs no re-pinning. If what'
 pinned location no longer matches what was pinned — a file where the directory used to be, say —
 every command refuses it rather than silently acting on whatever is there now.
 
+Resolving a bare name only ever considers a config file this user owns, isn't a symlink, and isn't
+writable by anyone else, and stops climbing the moment an ancestor directory itself isn't owned by
+this user — so a config planted in a shared directory above where you happen to be running from
+(a bare `/tmp`, say) is never trusted. Even a config this user does trust can't point outside its
+own directory or at an unrecognised environment variable; either is refused the same way. The
+ownership check is POSIX-only (Windows exposes no equivalent through Python's standard library);
+the containment and environment-variable checks hold on every platform.
+
 ## Usage
 
 ```bash

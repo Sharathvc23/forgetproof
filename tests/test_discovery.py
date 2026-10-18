@@ -129,3 +129,80 @@ def test_cli_init_reports_nothing_found_without_asking(tmp_path, monkeypatch):
     assert main(["init", str(tmp_path)]) == 0
     assert not asked
     assert not discovery.config_path(tmp_path).exists()
+
+
+def test_find_config_rejects_a_world_writable_config_file(tmp_path):
+    path = discovery.write_config(tmp_path, [])
+    path.chmod(0o666)
+    assert discovery.find_config(tmp_path) is None
+
+
+def test_find_config_rejects_a_symlinked_config_file(tmp_path):
+    real = tmp_path / "elsewhere.json"
+    real.write_text('{"stores": {}}')
+    link = tmp_path / discovery.CONFIG_NAME
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("no symlink privilege on this runner")
+    assert discovery.find_config(tmp_path) is None
+
+
+def test_find_config_stops_at_the_first_ancestor_it_does_not_own(tmp_path, monkeypatch):
+    """Simulates a shared, world-writable ancestor (a bare /tmp, say): nothing above a
+    directory nobody here owns should be treated as this user's own project."""
+    outer = tmp_path  # stands in for a directory this user does NOT own
+    inner = tmp_path / "mine"
+    inner.mkdir()
+    discovery.write_config(outer, [])  # planted by "someone else" one level up
+
+    real_owned = discovery._owned_by_me
+    monkeypatch.setattr(discovery, "_owned_by_me", lambda p: real_owned(p) and p != outer)
+    assert discovery.find_config(inner) is None  # climbing stopped before reaching outer's config
+
+    # A trustworthy config one level further down, inside the user's own territory, still works.
+    discovery.write_config(inner, [])
+    assert discovery.find_config(inner) == discovery.config_path(inner)
+
+
+def test_resolve_rejects_a_path_outside_the_configs_own_directory(tmp_path):
+    inside = tmp_path / "project"
+    inside.mkdir()
+    outside = tmp_path / "elsewhere.db"
+    make_sqlite(outside)
+    pinned = discovery.Found("escape", "sqlite", str(outside))
+    with pytest.raises(ValueError, match="outside"):
+        discovery.resolve(pinned, root=inside)
+    assert discovery.resolve(pinned, root=tmp_path) == outside  # inside this wider root: fine
+
+
+def test_resolve_rejects_a_postgres_entry_naming_an_unrecognised_env_var(monkeypatch):
+    monkeypatch.setenv("SOME_OTHER_SECRET", "postgresql://app@db/agent")
+    with pytest.raises(ValueError, match="recognised environment variable"):
+        discovery.resolve(discovery.Found("db", "postgres", "SOME_OTHER_SECRET"))
+
+
+def test_cli_scan_by_bare_name_ignores_an_unowned_ancestors_config(tmp_path, monkeypatch):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    victim_db = sub / "a.db"
+    make_sqlite(victim_db)
+    attacker_db = tmp_path / "attacker.db"
+    make_sqlite(attacker_db)
+    discovery.write_config(tmp_path, [discovery.Found("a", "sqlite", str(attacker_db))])
+
+    real_owned = discovery._owned_by_me
+    monkeypatch.setattr(discovery, "_owned_by_me", lambda p: real_owned(p) and p != tmp_path)
+    monkeypatch.chdir(sub)
+    assert main(["scan", "a"]) == 2  # not resolved against the untrusted ancestor's config at all
+
+
+def test_cli_mcp_config_rejects_an_entry_pointing_outside_its_own_directory(tmp_path, capsys):
+    pytest.importorskip("mcp")
+    inside = tmp_path / "project"
+    inside.mkdir()
+    outside_db = tmp_path / "outside.db"
+    make_sqlite(outside_db)
+    config = discovery.write_config(inside, [discovery.Found("escape", "sqlite", str(outside_db))])
+    assert main(["mcp", "--config", str(config)]) == 2
+    assert "outside" in capsys.readouterr().err
