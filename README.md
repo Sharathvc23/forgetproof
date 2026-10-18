@@ -17,9 +17,28 @@ pip install forgetproof              # scan Chroma and SQLite
 pip install 'forgetproof[chroma]'    # + fix Chroma (chromadb >= 1.0)
 pip install 'forgetproof[postgres]'  # + Postgres/pgvector
 pip install 'forgetproof[mcp]'       # + MCP server for agents
+pip install 'forgetproof[keyring]'   # + keep generated keys in the OS keychain
 ```
 
 Python 3.11+.
+
+## Find your stores once, then refer to them by name
+
+```bash
+cd your_project
+forgetproof init            # finds Chroma directories, SQLite files, and $DATABASE_URL etc.
+                             # shows what it found, asks once, then writes .forgetproof.json
+forgetproof scan memory      # "memory" is whatever init named it; works from any subdirectory too
+```
+
+`init` never acts on what it finds — it only proposes a list and writes nothing without that one
+confirmation (`--yes` skips it; useful in a setup script you already trust). From then on, every
+command that takes a store accepts a pinned name in place of a path or URL, resolved by walking up
+from the current directory the way `git` finds `.git`. A pinned Postgres store records only the
+*name* of the environment variable that holds its URL, never the URL itself, so the config file
+never contains a password and a rotated credential needs no re-pinning. If what's actually at a
+pinned location no longer matches what was pinned — a file where the directory used to be, say —
+every command refuses it rather than silently acting on whatever is there now.
 
 ## Usage
 
@@ -87,7 +106,11 @@ table, with `lock_timeout` set to 15 s.
 
 JSON with before/after findings, actions taken, canary results, warnings and the SHA-256 of every store
 file after the fix (relation files for Postgres). Signed with Ed25519. The key is generated on first use
-at `~/.config/forgetproof/signing_key.pem` (override with `$FORGETPROOF_HOME`).
+at `~/.config/forgetproof/signing_key.pem` (override with `$FORGETPROOF_HOME`), or in the OS keychain
+instead with `pip install 'forgetproof[keyring]'` and `FORGETPROOF_USE_KEYRING=1` — opt in explicitly;
+forgetproof never auto-detects a keychain, since a backend needing an interactive unlock would otherwise
+silently hang a non-interactive process the first time it ever runs. An existing file key is never moved
+once that's turned on. The same applies to the key that encrypts a forget() request queued for Chroma.
 `forgetproof key` prints the public key. `verify --key <fingerprint>` pins the signer, and
 `verify --against <store>` rehashes and rescans the store.
 
@@ -104,6 +127,8 @@ file the operator's application keeps current with whoever is signed in; the age
 forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent \
   --allow-fix --subject-file /run/forgetproof/current-user
 claude mcp add forgetproof -- forgetproof mcp --store memory=/srv/agent/chroma_dir   # Claude Code
+
+forgetproof init --yes && forgetproof mcp --config .forgetproof.json --allow-fix  # from the pinned list
 ```
 
 | Tool | Needs | Effect |
@@ -167,6 +192,21 @@ built to help with erasure requests shouldn't itself become an unbounded record 
 ```
 
 Writes a counts-only job summary. Outputs: `clean`, `exit-code`.
+
+## Security defaults
+
+These hold without any configuration, and a test (`test_no_network.py`) guards the first one:
+
+- **Nothing phones home.** forgetproof never imports a generic network client and makes no request
+  except to the database you pointed it at. There's no telemetry to turn off.
+- **Erasure is opt-in at every layer.** `scan` only ever reads. The MCP server offers no destructive
+  tool at all unless started with `--allow-fix`, and `forget_me`/`check_if_forgotten` don't exist
+  unless `--subject-file` is set.
+- **No secret goes in a config file.** A Postgres URL's password comes from `PGPASSWORD` or the URL
+  itself at call time, never from `init`'s pinned `.forgetproof.json`, which records only an
+  environment variable's *name* for a Postgres store.
+- **Few dependencies.** The installable package needs only `cryptography`; chromadb, psycopg, the
+  `mcp` SDK and `keyring` are all optional extras, loaded only if you install them.
 
 ## Limitations
 

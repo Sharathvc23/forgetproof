@@ -38,6 +38,7 @@ postgres = ["psycopg[binary]>=3.1"]
 mcp = [
     "mcp>=2.3",
 ]
+keyring = ["keyring>=25"]
 
 [project.scripts]
 forgetproof = "forgetproof.cli:main"
@@ -49,6 +50,7 @@ dev = [
     "pgserver>=0.1.4; python_version < '3.13'",  # a throwaway Postgres + pgvector for tests
     "pytest>=8",
     "mcp>=2.3",
+    "keyring>=25",
 ]
 
 [build-system]

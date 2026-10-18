@@ -29,7 +29,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
-from . import postgres, receipt
+from . import keystore, postgres, receipt
 from .fixer import FixError, Options, fix
 
 MAX_ATTEMPTS = 3  # how many run_queued() calls retry an entry that isn't clean yet before parking it
@@ -57,14 +57,7 @@ def _queue_dir(queue_dir: Path | str | None = None) -> Path:
 
 
 def _queue_key(queue_dir: Path) -> Fernet:
-    path = queue_dir / "queue.key"
-    if not path.exists():
-        path.write_bytes(Fernet.generate_key())
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
-    return Fernet(path.read_bytes())
+    return Fernet(keystore.get_or_create("queue_key", queue_dir / "queue.key", Fernet.generate_key))
 
 
 def _issue(target: Path | str, result) -> dict:

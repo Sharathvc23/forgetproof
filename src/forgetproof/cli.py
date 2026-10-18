@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, forget as forget_mod, postgres, receipt
+from . import __version__, discovery, forget as forget_mod, postgres, receipt
 from .fixer import FixError, Options, fix, plan
 from .report import Report
 from .scanner import UnsupportedStore, scan
@@ -27,7 +28,17 @@ red, green, bold, dim = _style("31"), _style("32"), _style("1"), _style("2")
 
 
 def _target(arg: str) -> Path | str:
-    return arg if postgres.is_postgres(arg) else Path(arg).resolve()
+    if postgres.is_postgres(arg):
+        return arg
+    path = Path(arg)
+    # A bare name (no "/" and no existing file there) may be a store pinned by `forgetproof init`.
+    if not path.exists() and os.sep not in arg and "/" not in arg:
+        config = discovery.find_config(Path.cwd())
+        if config is not None:
+            pinned = discovery.load_config(config).get(arg)
+            if pinned is not None:
+                return discovery.resolve(pinned)
+    return path.resolve()
 
 
 def _canaries(args) -> list[str]:
@@ -243,10 +254,39 @@ def cmd_mcp(args) -> int:
         print(red("error: the MCP server needs the mcp extra: pip install 'forgetproof[mcp]'"), file=sys.stderr)
         return EXIT_ERROR
     stores = [mcp_server.parse_store(spec) for spec in args.store]
+    if args.config:
+        config = Path(args.config).expanduser().resolve()
+        stores += [mcp_server.Store(name, discovery.resolve(found))
+                   for name, found in discovery.load_config(config).items()]
+    if not stores:
+        print(red("error: no stores given — pass --store or --config"), file=sys.stderr)
+        return EXIT_ERROR
     receipts = Path(args.receipts).expanduser().resolve() if args.receipts else None
     queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
     mcp_server.build(stores, allow_fix=args.allow_fix, receipts_dir=receipts,
                       subject_file=args.subject_file, queue_dir=queue_dir).run()
+    return EXIT_CLEAN
+
+
+def cmd_init(args) -> int:
+    root = Path(args.directory).expanduser().resolve()
+    found = discovery.discover(root, max_depth=args.max_depth)
+    if not found:
+        print(dim(f"nothing that looks like a memory store was found under {root}."))
+        return EXIT_CLEAN
+    print(f"Found under {root}:")
+    for f in found:
+        where = f"the {f.where} environment variable" if f.kind == "postgres" else f.where
+        print(f"  • {bold(f.name)} ({f.kind}): {where}")
+    out = discovery.config_path(root)
+    if not args.yes:
+        print(f"\nThis writes {out} so forgetproof only ever acts on these, by name, from here on.")
+        if input("Pin these stores? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Aborted; nothing was written.")
+            return EXIT_ERROR
+    discovery.write_config(root, found)
+    print(green(f"✓ pinned {len(found)} store(s) to {out}"))
+    print(dim(f"  e.g. forgetproof scan {found[0].name}   (run from {root}, or a subdirectory of it)"))
     return EXIT_CLEAN
 
 
@@ -319,9 +359,18 @@ def main(argv: list[str] | None = None) -> int:
     k = sub.add_parser("key", help="show this machine's receipt signing key")
     k.set_defaults(func=cmd_key)
 
+    i = sub.add_parser("init", help="find memory stores under a directory and pin them by name, once, after asking")
+    i.add_argument("directory", nargs="?", default=".", help="default: the current directory")
+    i.add_argument("--max-depth", type=int, default=4, metavar="N", help="how far to search into subdirectories")
+    i.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    i.set_defaults(func=cmd_init)
+
     m = sub.add_parser("mcp", help="run an MCP server (stdio) that lets an agent scan, fix and verify named stores")
-    m.add_argument("--store", action="append", required=True, metavar="NAME=PATH_OR_URL",
+    m.add_argument("--store", action="append", default=[], metavar="NAME=PATH_OR_URL",
                    help="a store the agent may use (repeatable); the agent only ever sees NAME")
+    m.add_argument("--config", metavar="FILE",
+                   help="also use every store pinned by `forgetproof init` in this file "
+                        f"(default name: {discovery.CONFIG_NAME})")
     m.add_argument("--allow-fix", action="store_true", help="offer fix_store and forget_me (off by default)")
     m.add_argument("--receipts", metavar="DIR", help="where receipts are written (default: next to the signing key)")
     m.add_argument("--subject-file", metavar="FILE",
