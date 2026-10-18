@@ -227,6 +227,15 @@ def cmd_run_queued(args) -> int:
     return EXIT_CLEAN
 
 
+def cmd_purge_stale(args) -> int:
+    target = _target(args.path) if args.path else None
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    purged = forget_mod.purge_stale(target, older_than_days=args.older_than_days, queue_dir=queue_dir)
+    print(f"purged {purged} parked entr{'y' if purged == 1 else 'ies'} "
+          f"older than {args.older_than_days} day(s).")
+    return EXIT_CLEAN
+
+
 def cmd_mcp(args) -> int:
     try:
         from . import mcp_server
@@ -293,6 +302,13 @@ def main(argv: list[str] | None = None) -> int:
     rq.add_argument("--allow-upgrade", action="store_true",
                     help="let the installed chromadb upgrade an older store to its own format")
     rq.set_defaults(func=cmd_run_queued)
+
+    ps = sub.add_parser("purge-stale", help="delete parked (repeatedly non-clean) queue entries older than N days")
+    ps.add_argument("path", nargs="?", help="only purge entries for this store (default: every store in the queue)")
+    ps.add_argument("--older-than-days", type=float, default=forget_mod.PARK_RETENTION_DAYS, metavar="N",
+                     help=f"default: {forget_mod.PARK_RETENTION_DAYS} (run-queued also purges at this age on its own)")
+    ps.add_argument("--queue-dir", metavar="DIR", help="where entries were queued (default: next to the signing key)")
+    ps.set_defaults(func=cmd_purge_stale)
 
     v = sub.add_parser("verify", help="check a receipt's signature, optionally against the store")
     v.add_argument("receipt")

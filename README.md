@@ -151,6 +151,11 @@ not be erased); `run_queued`/`run-queued` reports that result rather than claimi
 up to `forget.MAX_ATTEMPTS` times, then parks the entry (kept, not auto-retried) rather than either
 looping forever or silently dropping it. `forget.stale_entries(store)` reports parked entries.
 
+A parked entry still holds its (encrypted) subject so it can be retried once resolved, but a tool
+built to help with erasure requests shouldn't itself become an unbounded record of who made one:
+`run_queued` purges a parked entry on its own once it's older than `forget.PARK_RETENTION_DAYS`
+(30), and `forgetproof purge-stale [PATH] [--older-than-days N]` does it sooner on demand.
+
 ## GitHub Action
 
 ```yaml

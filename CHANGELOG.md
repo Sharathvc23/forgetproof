@@ -13,5 +13,7 @@ Initial release.
   never name a value to look up or erase. No tool exposes a value-matching parameter to the agent.
 - `forget()` / `forgetproof forget` / `forgetproof run-queued`: erase one subject's data immediately,
   or queue it (encrypted at rest) when the store can't be rewritten yet, to finish at the
-  application's next start before it reopens the store.
+  application's next start before it reopens the store. A queued entry is kept and retried, not
+  dropped, if a drain comes back showing residue; after a few attempts it's parked, and purged
+  automatically after 30 days (`forgetproof purge-stale` sooner) rather than kept indefinitely.
 - Composite GitHub Action.

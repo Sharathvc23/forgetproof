@@ -11,6 +11,12 @@ still be found after `fix()`: the same value can appear in another, unrelated li
 must not be erased. Retrying that forever won't help, so after a few attempts the entry is parked
 (kept, but no longer retried automatically) instead of either looping forever or being silently
 dropped as if it had succeeded.
+
+A parked entry still holds that encrypted subject — only the local queue key, sitting right next
+to it, can decrypt it — so an operator can inspect why and retry manually once resolved. A tool
+built to help with erasure requests must not become an unbounded store of who asked for one, so a
+parked entry isn't kept forever either: run_queued() purges one past PARK_RETENTION_DAYS on its own,
+and purge_stale() does it on demand.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -27,6 +33,7 @@ from . import postgres, receipt
 from .fixer import FixError, Options, fix
 
 MAX_ATTEMPTS = 3  # how many run_queued() calls retry an entry that isn't clean yet before parking it
+PARK_RETENTION_DAYS = 30  # how long a parked entry is kept before run_queued() purges it automatically
 
 
 @dataclass(frozen=True)
@@ -106,10 +113,34 @@ def pending(target: Path | str, *, queue_dir: Path | str | None = None) -> int:
 def stale_entries(target: Path | str, *, queue_dir: Path | str | None = None) -> int:
     """How many forget() calls for this target were parked: tried MAX_ATTEMPTS times by
     run_queued() without becoming clean, so they're no longer retried automatically. Each
-    attempt's receipt recorded why — a value that's still genuinely live elsewhere, most often."""
+    attempt's receipt recorded why — a value that's still genuinely live elsewhere, most often.
+    Purged automatically after PARK_RETENTION_DAYS; purge_stale() does it sooner on demand."""
     qd = _queue_dir(queue_dir)
     label = _label(target)
     return sum(1 for e in qd.glob("*.failed") if json.loads(e.read_text()).get("target") == label)
+
+
+def purge_stale(target: Path | str | None = None, *, older_than_days: float = PARK_RETENTION_DAYS,
+                 queue_dir: Path | str | None = None) -> int:
+    """Delete parked entries older than `older_than_days` (for every target, if `target` is None).
+
+    A parked entry still holds the subject it couldn't erase, encrypted but decryptable with the
+    local queue key sitting beside it, so it isn't kept indefinitely. run_queued() calls this with
+    the default retention on every drain; call it directly to purge sooner, e.g. `older_than_days=0`.
+    """
+    qd = _queue_dir(queue_dir)
+    label = _label(target) if target is not None else None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    purged = 0
+    for entry in qd.glob("*.failed"):
+        data = json.loads(entry.read_text())
+        if label is not None and data.get("target") != label:
+            continue
+        parked_at = datetime.fromisoformat(data.get("parked_at", data["queued_at"]))
+        if parked_at <= cutoff:
+            entry.unlink()
+            purged += 1
+    return purged
 
 
 def run_queued(target: Path | str, *, options: Options | None = None,
@@ -121,7 +152,8 @@ def run_queued(target: Path | str, *, options: Options | None = None,
     verdict is CLEAN — never merely because it was attempted — so a crash midway, or a fix that
     didn't fully succeed, leaves it to retry rather than being silently treated as done. After
     MAX_ATTEMPTS without a clean result, an entry is parked (kept, but excluded from future
-    automatic retries) instead of being retried forever; stale_entries() reports those.
+    automatic retries) instead of being retried forever; stale_entries() reports those. Parked
+    entries older than PARK_RETENTION_DAYS are purged as part of this call.
     """
     qd = _queue_dir(queue_dir)
     key = _queue_key(qd)
@@ -141,7 +173,9 @@ def run_queued(target: Path | str, *, options: Options | None = None,
         attempts = data.get("attempts", 0) + 1
         data["attempts"] = attempts
         if attempts >= MAX_ATTEMPTS:
+            data["parked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             entry.rename(entry.with_suffix(".failed")).write_text(json.dumps(data))
         else:
             entry.write_text(json.dumps(data))
+    purge_stale(target, queue_dir=qd)
     return receipts

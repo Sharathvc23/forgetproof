@@ -1,12 +1,26 @@
 import json
 import subprocess
 import sys
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from conftest import email, make_chroma, make_sqlite
 
 from forgetproof import forget
 from forgetproof.cli import main
+
+
+def _park(qdir, target, subject, days_ago: float, attempts=forget.MAX_ATTEMPTS):
+    """Write a parked (.failed) entry directly, as run_queued() would have left it. Returns its path."""
+    key = forget._queue_key(forget._queue_dir(qdir))
+    when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    entry = forget._queue_dir(qdir) / f"{uuid.uuid4().hex}.failed"
+    entry.write_text(json.dumps({
+        "target": forget._label(target), "subject": key.encrypt(subject.encode()).decode(),
+        "queued_at": when, "parked_at": when, "attempts": attempts,
+    }))
+    return entry
 
 
 def test_forget_erases_the_subject_immediately_on_sqlite(tmp_path):
@@ -89,6 +103,45 @@ def test_run_queued_keeps_retrying_a_subject_that_is_still_genuinely_live(tmp_pa
     assert forget.stale_entries(path, queue_dir=qdir) == 1
     # And the record forget() was asked to protect is, correctly, still there.
     assert any(live_value.encode() in p.read_bytes() for p in path.rglob("*") if p.is_file())
+
+
+def test_purge_stale_respects_age_and_target(tmp_path):
+    db_a, db_b = tmp_path / "a.db", tmp_path / "b.db"
+    qdir = tmp_path / "queue"
+    old_a = _park(qdir, db_a, email(1), days_ago=forget.PARK_RETENTION_DAYS + 1)
+    recent_a = _park(qdir, db_a, email(2), days_ago=1)
+    old_b = _park(qdir, db_b, email(3), days_ago=forget.PARK_RETENTION_DAYS + 1)
+
+    # Filtered by target: only db_a's old entry goes; db_a's recent one and db_b's are untouched.
+    assert forget.purge_stale(db_a, queue_dir=qdir) == 1
+    assert not old_a.exists() and recent_a.exists() and old_b.exists()
+
+    # Unfiltered (no target): every old entry across every store goes.
+    assert forget.purge_stale(queue_dir=qdir) == 1
+    assert not old_b.exists() and recent_a.exists()
+    assert forget.stale_entries(db_a, queue_dir=qdir) == 1  # the recent one is still parked, just not purged
+
+
+@pytest.mark.fix
+def test_run_queued_auto_purges_old_parked_entries(tmp_path):
+    path = tmp_path / "s"
+    qdir = tmp_path / "queue"
+    _park(qdir, path, email(1), days_ago=forget.PARK_RETENTION_DAYS + 1)
+    assert forget.stale_entries(path, queue_dir=qdir) == 1
+
+    # Nothing active to drain, but the old parked entry is purged as part of the same call —
+    # a parked entry is never kept forever just because nobody called purge_stale() explicitly.
+    assert forget.run_queued(path, queue_dir=qdir) == []
+    assert forget.stale_entries(path, queue_dir=qdir) == 0
+
+
+def test_cli_purge_stale(tmp_path):
+    path = tmp_path / "s"
+    qdir = tmp_path / "queue"
+    _park(qdir, path, email(1), days_ago=forget.PARK_RETENTION_DAYS + 1)
+    _park(qdir, path, email(2), days_ago=1)
+    assert main(["purge-stale", str(path), "--queue-dir", str(qdir)]) == 0
+    assert forget.stale_entries(path, queue_dir=qdir) == 1  # the recent one survives the default retention
 
 
 def test_run_queued_only_drains_entries_for_its_own_target(tmp_path):
