@@ -50,6 +50,24 @@ jobs:
           uv venv /tmp/clean && uv pip install --python /tmp/clean dist/*.whl
           /tmp/clean/bin/forgetproof --version
           /tmp/clean/bin/forgetproof scan . && exit 1 || test $? -eq 2  # unsupported target -> exit 2
+          /tmp/clean/bin/forgetproof mcp --store x=. && exit 1 || test $? -eq 2  # mcp extra missing -> exit 2
+      - name: install the wheel with the mcp extra and list its tools over stdio
+        run: |
+          uv venv /tmp/withmcp && uv pip install --python /tmp/withmcp "$(ls dist/*.whl)[mcp]"
+          /tmp/withmcp/bin/python - <<'PY'
+          import asyncio, sqlite3, tempfile, os
+          from mcp import Client, StdioServerParameters
+          db = os.path.join(tempfile.mkdtemp(), "a.db")
+          sqlite3.connect(db).execute("create table t (x)")
+          async def main():
+              p = StdioServerParameters(command="/tmp/withmcp/bin/forgetproof", args=["mcp", "--store", f"chat={db}"])
+              async with Client(p) as c:
+                  names = sorted(t.name for t in (await c.list_tools()).tools)
+                  assert names == ["get_receipt", "list_stores", "plan_fix", "scan_store", "verify_receipt"], names
+                  r = await c.call_tool("scan_store", {"store_name": "chat"})
+                  assert not r.is_error and r.structured_content["clean"], r
+          asyncio.run(main())
+          PY
 
   postgres:
     strategy:

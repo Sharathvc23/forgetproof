@@ -35,6 +35,9 @@ Changelog = "https://github.com/Sharathvc23/forgetproof/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0"]
 postgres = ["psycopg[binary]>=3.1"]
+mcp = [
+    "mcp>=2.3",
+]
 
 [project.scripts]
 forgetproof = "forgetproof.cli:main"
@@ -45,6 +48,7 @@ dev = [
     "psycopg[binary]>=3.1",
     "pgserver>=0.1.4; python_version < '3.13'",  # a throwaway Postgres + pgvector for tests
     "pytest>=8",
+    "mcp>=2.3",
 ]
 
 [build-system]

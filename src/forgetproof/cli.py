@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, postgres, receipt
+from . import __version__, forget as forget_mod, postgres, receipt
 from .fixer import FixError, Options, fix, plan
 from .report import Report
 from .scanner import UnsupportedStore, scan
@@ -184,6 +184,72 @@ def cmd_key(args) -> int:
     return EXIT_CLEAN
 
 
+def cmd_forget(args) -> int:
+    target = _target(args.path)
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    result = forget_mod.forget(target, args.subject, options=Options(allow_upgrade=args.allow_upgrade),
+                                queue_dir=queue_dir)
+    if isinstance(result, forget_mod.Queued):
+        print(f"{bold('queued')}: {result.target} is open elsewhere right now (Chroma can't be rewritten while "
+              f"that's true).\nRun `forgetproof run-queued {args.path}` once nothing has it open, "
+              "typically at your app's next start before it reopens the store.")
+        return EXIT_RESIDUE
+    out = Path(args.receipt or f"forgetproof-receipt-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json")
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    if result["verdict"] == "CLEAN":
+        print(green(f"✓ Erased. Signed receipt: {out}"))
+    else:
+        print(red(f"canary still on disk after fix — see {out}"))
+    return EXIT_CLEAN if result["verdict"] == "CLEAN" else EXIT_RESIDUE
+
+
+def cmd_run_queued(args) -> int:
+    target = _target(args.path)
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    receipts = forget_mod.run_queued(target, options=Options(allow_upgrade=args.allow_upgrade), queue_dir=queue_dir)
+    if not receipts:
+        print(dim("nothing queued for this store."))
+        return EXIT_CLEAN
+    out_dir = Path(args.receipts_dir) if args.receipts_dir else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stuck = 0
+    for i, rec in enumerate(receipts, 1):
+        path = out_dir / f"forgetproof-receipt-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{i}.json"
+        path.write_text(json.dumps(rec, indent=2) + "\n")
+        clean = rec["verdict"] == "CLEAN"
+        stuck += 0 if clean else 1
+        print(f"  • {(green if clean else red)(rec['verdict'])}: {path}")
+    if stuck:
+        print(red(f"{stuck} of {len(receipts)} queued erasure(s) still show residue — see the receipts above. "
+                   f"They stay queued (up to {forget_mod.MAX_ATTEMPTS} attempts) rather than being dropped."))
+        return EXIT_RESIDUE
+    print(green(f"✓ {len(receipts)} queued erasure(s) finished."))
+    return EXIT_CLEAN
+
+
+def cmd_purge_stale(args) -> int:
+    target = _target(args.path) if args.path else None
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    purged = forget_mod.purge_stale(target, older_than_days=args.older_than_days, queue_dir=queue_dir)
+    print(f"purged {purged} parked entr{'y' if purged == 1 else 'ies'} "
+          f"older than {args.older_than_days} day(s).")
+    return EXIT_CLEAN
+
+
+def cmd_mcp(args) -> int:
+    try:
+        from . import mcp_server
+    except ImportError:
+        print(red("error: the MCP server needs the mcp extra: pip install 'forgetproof[mcp]'"), file=sys.stderr)
+        return EXIT_ERROR
+    stores = [mcp_server.parse_store(spec) for spec in args.store]
+    receipts = Path(args.receipts).expanduser().resolve() if args.receipts else None
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    mcp_server.build(stores, allow_fix=args.allow_fix, receipts_dir=receipts,
+                      subject_file=args.subject_file, queue_dir=queue_dir).run()
+    return EXIT_CLEAN
+
+
 def _utf8_output() -> None:
     """Windows consoles and redirects default to a legacy code page that can't encode ✓ and ✗."""
     for stream in (sys.stdout, sys.stderr):
@@ -220,6 +286,30 @@ def main(argv: list[str] | None = None) -> int:
                    help="let the installed chromadb upgrade an older store to its own format")
     f.set_defaults(func=cmd_fix)
 
+    g = sub.add_parser("forget", help="erase one subject's data now, or queue it if the store can't be rewritten yet")
+    g.add_argument("path")
+    g.add_argument("--subject", required=True, metavar="VALUE", help="the value to erase, e.g. a user's email")
+    g.add_argument("--receipt", metavar="FILE", help="where to write the receipt")
+    g.add_argument("--queue-dir", metavar="DIR", help="where to queue an erasure that can't run yet (default: next to the signing key)")
+    g.add_argument("--allow-upgrade", action="store_true",
+                   help="let the installed chromadb upgrade an older store to its own format")
+    g.set_defaults(func=cmd_forget)
+
+    rq = sub.add_parser("run-queued", help="finish forget() calls queued for a store (run before reopening it)")
+    rq.add_argument("path")
+    rq.add_argument("--receipts-dir", metavar="DIR", help="where to write the receipts (default: current directory)")
+    rq.add_argument("--queue-dir", metavar="DIR", help="where entries were queued (default: next to the signing key)")
+    rq.add_argument("--allow-upgrade", action="store_true",
+                    help="let the installed chromadb upgrade an older store to its own format")
+    rq.set_defaults(func=cmd_run_queued)
+
+    ps = sub.add_parser("purge-stale", help="delete parked (repeatedly non-clean) queue entries older than N days")
+    ps.add_argument("path", nargs="?", help="only purge entries for this store (default: every store in the queue)")
+    ps.add_argument("--older-than-days", type=float, default=forget_mod.PARK_RETENTION_DAYS, metavar="N",
+                     help=f"default: {forget_mod.PARK_RETENTION_DAYS} (run-queued also purges at this age on its own)")
+    ps.add_argument("--queue-dir", metavar="DIR", help="where entries were queued (default: next to the signing key)")
+    ps.set_defaults(func=cmd_purge_stale)
+
     v = sub.add_parser("verify", help="check a receipt's signature, optionally against the store")
     v.add_argument("receipt")
     v.add_argument("--against", metavar="PATH", help="rescan this store and compare")
@@ -228,6 +318,17 @@ def main(argv: list[str] | None = None) -> int:
 
     k = sub.add_parser("key", help="show this machine's receipt signing key")
     k.set_defaults(func=cmd_key)
+
+    m = sub.add_parser("mcp", help="run an MCP server (stdio) that lets an agent scan, fix and verify named stores")
+    m.add_argument("--store", action="append", required=True, metavar="NAME=PATH_OR_URL",
+                   help="a store the agent may use (repeatable); the agent only ever sees NAME")
+    m.add_argument("--allow-fix", action="store_true", help="offer fix_store and forget_me (off by default)")
+    m.add_argument("--receipts", metavar="DIR", help="where receipts are written (default: next to the signing key)")
+    m.add_argument("--subject-file", metavar="FILE",
+                   help="file holding the current user's identity, kept current by your application; "
+                        "enables check_if_forgotten and forget_me, scoped to that value only")
+    m.add_argument("--queue-dir", metavar="DIR", help="where forget_me queues a Chroma erasure it can't do yet")
+    m.set_defaults(func=cmd_mcp)
 
     args = p.parse_args(argv)
     try:

@@ -6,6 +6,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 import uuid
 
 import pytest
@@ -234,3 +235,37 @@ def test_cli_scan_fix_verify_and_no_password_anywhere(db, tmp_path, capsys):
     receipt = json.loads(rec.read_text())
     assert receipt["verdict"] == "CLEAN" and receipt["target"].startswith("postgresql://")
     assert receipt["files"], "receipt should fingerprint the table files"
+
+
+def test_mcp_forget_me_scan_verify_and_no_password_anywhere(db, tmp_path):
+    pytest.importorskip("mcp")
+    from test_mcp import call, ok
+
+    from forgetproof.mcp_server import build, parse_store
+
+    deleted, _ = make_memories(db, n=600)
+    info = info_of(db)
+    secret = info.get("password") or "hunter2-not-printed"
+    subj = tmp_path / "subject"
+    subj.write_text(email(deleted[2]))
+    server = build([parse_store(f"pg={url_for({**info, 'password': secret})}")], allow_fix=True,
+                   receipts_dir=tmp_path / "receipts", subject_file=subj)
+    replies = [call(server, "list_stores")]
+    replies.append(call(server, "scan_store", store_name="pg"))
+    assert not ok(replies[-1])["clean"]
+    # Whether this one row still shows up depends on opportunistic page pruning, so
+    # check_if_forgotten isn't asserted here; forget_me's result below is deterministic.
+    replies.append(call(server, "check_if_forgotten", store_name="pg"))
+    time.sleep(1.1)  # past the per-store cooldown shared by check_if_forgotten and forget_me
+    replies.append(call(server, "forget_me", store_name="pg"))
+    fixed = ok(replies[-1])
+    assert fixed["done"] and fixed["clean"]
+    time.sleep(1.1)
+    replies.append(call(server, "check_if_forgotten", store_name="pg"))
+    assert ok(replies[-1])["forgotten"] is True
+    replies.append(call(server, "verify_receipt", receipt_id=fixed["receipt_id"]))
+    assert ok(replies[-1])["signature_valid"] and ok(replies[-1])["clean_now"]
+    replies.append(call(server, "get_receipt", receipt_id=fixed["receipt_id"]))
+    assert all(secret not in r.model_dump_json() for r in replies)
+    assert all(email(deleted[2]) not in r.model_dump_json() for r in replies)
+    assert all(secret not in p.read_text() for p in (tmp_path / "receipts").iterdir())

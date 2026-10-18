@@ -7,12 +7,16 @@ Deletes in these stores are logical. The bytes persist in write logs, index tomb
 and unzeroed buffers until something rewrites them. `forgetproof` reads the store files directly, reports
 what is recoverable, and rewrites the store so it isn't.
 
+forgetproof comes out of stellarminds.ai's research on non-membership proofs and memory erasure for
+AI agents.
+
 ## Install
 
 ```bash
 pip install forgetproof              # scan Chroma and SQLite
 pip install 'forgetproof[chroma]'    # + fix Chroma (chromadb >= 1.0)
 pip install 'forgetproof[postgres]'  # + Postgres/pgvector
+pip install 'forgetproof[mcp]'       # + MCP server for agents
 ```
 
 Python 3.11+.
@@ -88,6 +92,69 @@ at `~/.config/forgetproof/signing_key.pem` (override with `$FORGETPROOF_HOME`).
 `verify --against <store>` rehashes and rescans the store.
 
 A receipt is an operator attestation that anyone can recheck, not a third-party audit.
+
+## MCP server
+
+Exposes forgetproof to agents over MCP (stdio). The operator names the stores; the agent can only
+refer to them by name, and can never name a value to look up or erase — it has no `canaries`
+parameter anywhere. The one value a subject-scoped call acts on comes from `--subject-file`, a
+file the operator's application keeps current with whoever is signed in; the agent cannot set it.
+
+```bash
+forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent \
+  --allow-fix --subject-file /run/forgetproof/current-user
+claude mcp add forgetproof -- forgetproof mcp --store memory=/srv/agent/chroma_dir   # Claude Code
+```
+
+| Tool | Needs | Effect |
+|---|---|---|
+| `list_stores` | – | Configured store names, and whether fix and a subject are configured |
+| `scan_store(store_name)` | – | Findings as counts only: never whether a specific value is present |
+| `plan_fix(store_name)` | – | Steps `fix` would take; changes nothing |
+| `check_if_forgotten(store_name)` | `--subject-file` | Whether *the current subject* still has recoverable data |
+| `forget_me(store_name)` | `--subject-file`, `--allow-fix` | Erases the current subject's data; may come back `queued` (below) |
+| `fix_store(store_name)` | `--allow-fix` | Erases everything the scan found, with no value argument |
+| `get_receipt` / `verify_receipt(receipt_id)` | – | Receipt JSON; signature, file-hash and rescan check |
+
+Responses never contain values or samples, redacted or not. Calls on the same store are serialized,
+and subject-scoped calls are rate-limited per store. On Chroma, `forget_me` and `fix_store` return an
+error, and `forget_me` queues the erasure instead of failing, while the application has the store
+open; call `forgetproof run-queued` (below) at the application's next start, before it reopens the
+store, to finish it — the server also does this for its configured stores on its own startup.
+Receipts go to `~/.config/forgetproof/receipts` (`--receipts DIR`). Pass the Postgres password
+through `PGPASSWORD` in the server's environment.
+
+## Embedding directly
+
+For an application with its own delete flow, call `forget()` instead of running a server:
+
+```python
+from forgetproof import forget
+
+receipt = forget.forget(store, subject=user.email)   # erases now, or...
+# forget.Queued(target=..., queued_at=...) on Chroma if the app still has the store open
+
+# at the app's next start, before it reopens the store:
+for receipt in forget.run_queued(store):
+    ...
+```
+
+```bash
+forgetproof forget ./chroma_dir --subject user3@example.com   # or "queued: …" if Chroma is open
+forgetproof run-queued ./chroma_dir --receipts-dir ./receipts  # call before reopening the store
+```
+
+A queued request is encrypted at rest under a local key (`~/.config/forgetproof/queue` by default)
+and deleted once it drains *clean* — not merely once it's been tried. A subject can legitimately
+still be found afterwards (the same value can be part of another, unrelated live record that must
+not be erased); `run_queued`/`run-queued` reports that result rather than claiming success, retries
+up to `forget.MAX_ATTEMPTS` times, then parks the entry (kept, not auto-retried) rather than either
+looping forever or silently dropping it. `forget.stale_entries(store)` reports parked entries.
+
+A parked entry still holds its (encrypted) subject so it can be retried once resolved, but a tool
+built to help with erasure requests shouldn't itself become an unbounded record of who made one:
+`run_queued` purges a parked entry on its own once it's older than `forget.PARK_RETENTION_DAYS`
+(30), and `forgetproof purge-stale [PATH] [--older-than-days N]` does it sooner on demand.
 
 ## GitHub Action
 
