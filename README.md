@@ -145,8 +145,11 @@ forgetproof run-queued ./chroma_dir --receipts-dir ./receipts  # call before reo
 ```
 
 A queued request is encrypted at rest under a local key (`~/.config/forgetproof/queue` by default)
-and deleted the moment it's drained, so the queue is never a durable list of who asked to be
-forgotten.
+and deleted once it drains *clean* — not merely once it's been tried. A subject can legitimately
+still be found afterwards (the same value can be part of another, unrelated live record that must
+not be erased); `run_queued`/`run-queued` reports that result rather than claiming success, retries
+up to `forget.MAX_ATTEMPTS` times, then parks the entry (kept, not auto-retried) rather than either
+looping forever or silently dropping it. `forget.stale_entries(store)` reports parked entries.
 
 ## GitHub Action
 

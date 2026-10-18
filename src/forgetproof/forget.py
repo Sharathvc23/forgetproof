@@ -6,7 +6,11 @@ queues the request instead of failing, encrypted at rest under a local key. Call
 before the application reopens the store (its own next start is the natural point) to finish it.
 
 A queued entry holds nothing but an encrypted subject value and the store it is for. It is
-deleted the moment it is drained, so the queue is never a durable list of who asked to be forgotten.
+deleted once it drains *clean* — not merely once it's been tried. A subject can legitimately
+still be found after `fix()`: the same value can appear in another, unrelated live record that
+must not be erased. Retrying that forever won't help, so after a few attempts the entry is parked
+(kept, but no longer retried automatically) instead of either looping forever or being silently
+dropped as if it had succeeded.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ from cryptography.fernet import Fernet
 
 from . import postgres, receipt
 from .fixer import FixError, Options, fix
+
+MAX_ATTEMPTS = 3  # how many run_queued() calls retry an entry that isn't clean yet before parking it
 
 
 @dataclass(frozen=True)
@@ -87,10 +93,23 @@ def forget(target: Path | str, subject: str, *, options: Options | None = None,
 
 
 def pending(target: Path | str, *, queue_dir: Path | str | None = None) -> int:
-    """How many forget() calls are queued for this target."""
+    """How many forget() calls for this target will still be retried automatically.
+
+    Doesn't count entries parked by run_queued() after MAX_ATTEMPTS — those need the operator's
+    attention; stale_entries() reports them.
+    """
     qd = _queue_dir(queue_dir)
     label = _label(target)
     return sum(1 for e in qd.glob("*.json") if json.loads(e.read_text()).get("target") == label)
+
+
+def stale_entries(target: Path | str, *, queue_dir: Path | str | None = None) -> int:
+    """How many forget() calls for this target were parked: tried MAX_ATTEMPTS times by
+    run_queued() without becoming clean, so they're no longer retried automatically. Each
+    attempt's receipt recorded why — a value that's still genuinely live elsewhere, most often."""
+    qd = _queue_dir(queue_dir)
+    label = _label(target)
+    return sum(1 for e in qd.glob("*.failed") if json.loads(e.read_text()).get("target") == label)
 
 
 def run_queued(target: Path | str, *, options: Options | None = None,
@@ -98,8 +117,11 @@ def run_queued(target: Path | str, *, options: Options | None = None,
     """Finish every forget() queued for `target`. Call this before the application reopens
     a Chroma store, so nothing else has it open while the queued erasures run.
 
-    Each receipt is issued as its entry is drained; an entry is removed only after its
-    receipt is written, so a crash midway leaves it to retry on the next call.
+    Each receipt is issued as its entry is drained. An entry is removed only once its receipt's
+    verdict is CLEAN — never merely because it was attempted — so a crash midway, or a fix that
+    didn't fully succeed, leaves it to retry rather than being silently treated as done. After
+    MAX_ATTEMPTS without a clean result, an entry is parked (kept, but excluded from future
+    automatic retries) instead of being retried forever; stale_entries() reports those.
     """
     qd = _queue_dir(queue_dir)
     key = _queue_key(qd)
@@ -111,6 +133,15 @@ def run_queued(target: Path | str, *, options: Options | None = None,
             continue
         subject = key.decrypt(data["subject"].encode()).decode()
         result = fix(target, [subject], options or Options())
-        receipts.append(_issue(target, result))
-        entry.unlink()
+        rec = _issue(target, result)
+        receipts.append(rec)
+        if rec["verdict"] == "CLEAN":
+            entry.unlink()
+            continue
+        attempts = data.get("attempts", 0) + 1
+        data["attempts"] = attempts
+        if attempts >= MAX_ATTEMPTS:
+            entry.rename(entry.with_suffix(".failed")).write_text(json.dumps(data))
+        else:
+            entry.write_text(json.dumps(data))
     return receipts

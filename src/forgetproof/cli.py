@@ -186,7 +186,9 @@ def cmd_key(args) -> int:
 
 def cmd_forget(args) -> int:
     target = _target(args.path)
-    result = forget_mod.forget(target, args.subject, options=Options(allow_upgrade=args.allow_upgrade))
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    result = forget_mod.forget(target, args.subject, options=Options(allow_upgrade=args.allow_upgrade),
+                                queue_dir=queue_dir)
     if isinstance(result, forget_mod.Queued):
         print(f"{bold('queued')}: {result.target} is open elsewhere right now (Chroma can't be rewritten while "
               f"that's true).\nRun `forgetproof run-queued {args.path}` once nothing has it open, "
@@ -203,16 +205,24 @@ def cmd_forget(args) -> int:
 
 def cmd_run_queued(args) -> int:
     target = _target(args.path)
-    receipts = forget_mod.run_queued(target, options=Options(allow_upgrade=args.allow_upgrade))
+    queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
+    receipts = forget_mod.run_queued(target, options=Options(allow_upgrade=args.allow_upgrade), queue_dir=queue_dir)
     if not receipts:
         print(dim("nothing queued for this store."))
         return EXIT_CLEAN
     out_dir = Path(args.receipts_dir) if args.receipts_dir else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
+    stuck = 0
     for i, rec in enumerate(receipts, 1):
         path = out_dir / f"forgetproof-receipt-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{i}.json"
         path.write_text(json.dumps(rec, indent=2) + "\n")
-        print(f"  • {rec['verdict']}: {path}")
+        clean = rec["verdict"] == "CLEAN"
+        stuck += 0 if clean else 1
+        print(f"  • {(green if clean else red)(rec['verdict'])}: {path}")
+    if stuck:
+        print(red(f"{stuck} of {len(receipts)} queued erasure(s) still show residue — see the receipts above. "
+                   f"They stay queued (up to {forget_mod.MAX_ATTEMPTS} attempts) rather than being dropped."))
+        return EXIT_RESIDUE
     print(green(f"✓ {len(receipts)} queued erasure(s) finished."))
     return EXIT_CLEAN
 
@@ -271,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("path")
     g.add_argument("--subject", required=True, metavar="VALUE", help="the value to erase, e.g. a user's email")
     g.add_argument("--receipt", metavar="FILE", help="where to write the receipt")
+    g.add_argument("--queue-dir", metavar="DIR", help="where to queue an erasure that can't run yet (default: next to the signing key)")
     g.add_argument("--allow-upgrade", action="store_true",
                    help="let the installed chromadb upgrade an older store to its own format")
     g.set_defaults(func=cmd_forget)
@@ -278,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     rq = sub.add_parser("run-queued", help="finish forget() calls queued for a store (run before reopening it)")
     rq.add_argument("path")
     rq.add_argument("--receipts-dir", metavar="DIR", help="where to write the receipts (default: current directory)")
+    rq.add_argument("--queue-dir", metavar="DIR", help="where entries were queued (default: next to the signing key)")
     rq.add_argument("--allow-upgrade", action="store_true",
                     help="let the installed chromadb upgrade an older store to its own format")
     rq.set_defaults(func=cmd_run_queued)

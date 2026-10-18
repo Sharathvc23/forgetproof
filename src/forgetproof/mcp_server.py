@@ -160,7 +160,11 @@ def build(stores: list[Store], allow_fix: bool = False, receipts_dir: Path | Non
         for s in stores:
             try:
                 for rec in forget_mod.run_queued(s.target, queue_dir=queue_dir):
-                    write_receipt(s.name, rec)
+                    receipt_id = write_receipt(s.name, rec)
+                    if rec["verdict"] != "CLEAN":
+                        print(f"forgetproof: a queued erasure for store {s.name!r} still shows residue "
+                              f"(receipt {receipt_id}); it stays queued and is retried, up to "
+                              f"{forget_mod.MAX_ATTEMPTS} attempts, rather than being dropped", file=sys.stderr)
             except _EXPECTED as e:
                 print(f"forgetproof: couldn't finish a queued erasure for store {s.name!r}: {e}", file=sys.stderr)
 
