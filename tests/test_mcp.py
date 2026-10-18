@@ -12,7 +12,8 @@ pytest.importorskip("mcp")
 
 from mcp import Client, StdioServerParameters  # noqa: E402
 
-from forgetproof import forget as forget_mod  # noqa: E402
+from forgetproof import discovery, forget as forget_mod  # noqa: E402
+from forgetproof.cli import main  # noqa: E402
 from forgetproof.mcp_server import Store, build, parse_store  # noqa: E402
 
 
@@ -260,3 +261,32 @@ def test_stdio_server_over_the_cli(tmp_path):
     r = ok(scanned)
     assert not r["clean"]
     assert ok(checked) == {"forgotten": False, "store_type": "sqlite", "incomplete": None}
+
+
+def test_cli_mcp_merges_explicit_stores_with_a_pinned_config(tmp_path, monkeypatch):
+    import forgetproof.mcp_server as mcp_server_module
+
+    explicit_db, pinned_db = tmp_path / "explicit.db", tmp_path / "pinned.db"
+    make_sqlite(explicit_db)
+    make_sqlite(pinned_db)
+    config = discovery.write_config(tmp_path, [discovery.Found("pinned", "sqlite", str(pinned_db))])
+
+    captured = {}
+
+    class FakeServer:
+        def run(self):
+            captured["ran"] = True
+
+    def fake_build(stores, **kw):
+        captured["stores"] = {s.name: s.location for s in stores}
+        return FakeServer()
+
+    monkeypatch.setattr(mcp_server_module, "build", fake_build)
+    assert main(["mcp", "--store", f"explicit={explicit_db}", "--config", str(config)]) == 0
+    assert captured["stores"] == {"explicit": str(explicit_db.resolve()), "pinned": str(pinned_db.resolve())}
+    assert captured["ran"]
+
+
+def test_cli_mcp_requires_at_least_one_store(tmp_path, capsys):
+    assert main(["mcp"]) == 2
+    assert "no stores" in capsys.readouterr().err

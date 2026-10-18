@@ -68,6 +68,39 @@ jobs:
                   assert not r.is_error and r.structured_content["clean"], r
           asyncio.run(main())
           PY
+      - name: init discovers and pins a store, by name, from the config it writes
+        run: |
+          mkdir /tmp/project
+          python3 -c "import sqlite3; sqlite3.connect('/tmp/project/chat.db').execute('create table t (x)')"
+          cd /tmp/project && echo y | /tmp/clean/bin/forgetproof init
+          mkdir sub && cd sub
+          /tmp/clean/bin/forgetproof scan chat; test $? -ne 2  # resolved "chat" by name, not "unknown store"
+      - name: install the wheel with the keyring extra; a signing key round-trips through a fake backend
+        run: |
+          uv venv /tmp/withkeyring && uv pip install --python /tmp/withkeyring "$(ls dist/*.whl)[keyring]"
+          FORGETPROOF_HOME=/tmp/withkeyring-home FORGETPROOF_USE_KEYRING=1 /tmp/withkeyring/bin/python - <<'PY'
+          import keyring, keyring.backend, keyring.errors
+
+          class Fake(keyring.backend.KeyringBackend):
+              priority = 1000
+              store: dict[tuple[str, str], str] = {}
+
+              def get_password(self, service, name):
+                  return self.store.get((service, name))
+
+              def set_password(self, service, name, value):
+                  self.store[(service, name)] = value
+
+              def delete_password(self, service, name):
+                  raise keyring.errors.PasswordDeleteError()
+
+          keyring.set_keyring(Fake())
+          from forgetproof import receipt
+          k1 = receipt.load_or_create_key()
+          assert not receipt.key_path().exists()
+          k2 = receipt.load_or_create_key()
+          assert receipt.public_key_b64(k1) == receipt.public_key_b64(k2)
+          PY
 
   postgres:
     strategy:
