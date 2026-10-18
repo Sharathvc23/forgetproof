@@ -201,8 +201,15 @@ def test_forget_me_queues_instead_of_failing_while_chroma_is_open(tmp_path):
     assert not (tmp_path / "receipts").exists()
 
     # Starting a server for this store now drains the queue before offering anything else.
+    # A killed process's file handles aren't always released the instant wait() returns (seen on
+    # Windows CI, most likely antivirus scanning the just-written files) — build()'s drain already
+    # tolerates that by simply trying again on the next startup, so the test does the same here.
     receipts = tmp_path / "receipts"
-    build([Store("memory", path)], allow_fix=True, receipts_dir=receipts, queue_dir=qdir)
+    for _ in range(10):
+        build([Store("memory", path)], allow_fix=True, receipts_dir=receipts, queue_dir=qdir)
+        if forget_mod.pending(path, queue_dir=qdir) == 0:
+            break
+        time.sleep(1)
     assert forget_mod.pending(path, queue_dir=qdir) == 0
     rec_files = list(receipts.glob("*.json"))
     assert len(rec_files) == 1

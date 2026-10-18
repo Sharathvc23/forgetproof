@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,6 +10,24 @@ from conftest import email, make_chroma, make_sqlite
 
 from forgetproof import forget
 from forgetproof.cli import main
+from forgetproof.fixer import FixError
+
+
+def _run_queued_retrying(target, *, queue_dir=None, attempts=10, delay=1):
+    """run_queued(), tolerating a transient 'still open' error for a few seconds.
+
+    A just-killed holder process's file handles (or, on Windows CI, antivirus scanning the
+    files it just wrote) aren't always released the instant wait() returns. A real caller would
+    simply retry at its own next start, which never consumes one of run_queued()'s own retries —
+    fix() raising means nothing was written to the entry — so this does the same.
+    """
+    for attempt in range(attempts):
+        try:
+            return forget.run_queued(target, queue_dir=queue_dir)
+        except FixError as e:
+            if "open in another process" not in str(e) or attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 def _park(qdir, target, subject, days_ago: float, attempts=forget.MAX_ATTEMPTS):
@@ -61,7 +80,7 @@ def test_forget_queues_when_chroma_is_open_elsewhere(tmp_path):
         holder.wait()
 
     # Once nothing has the store open, run_queued finishes it and leaves no entry behind.
-    receipts = forget.run_queued(path, queue_dir=qdir)
+    receipts = _run_queued_retrying(path, queue_dir=qdir)
     assert len(receipts) == 1 and receipts[0]["verdict"] == "CLEAN"
     assert forget.pending(path, queue_dir=qdir) == 0
     assert not any(gone.encode() in p.read_bytes() for p in path.rglob("*") if p.is_file())
@@ -89,7 +108,7 @@ def test_run_queued_keeps_retrying_a_subject_that_is_still_genuinely_live(tmp_pa
         holder.wait()
 
     for attempt in range(1, forget.MAX_ATTEMPTS + 1):
-        receipts = forget.run_queued(path, queue_dir=qdir)
+        receipts = _run_queued_retrying(path, queue_dir=qdir)
         assert len(receipts) == 1 and receipts[0]["verdict"] == "RESIDUE_REMAINS"
         if attempt < forget.MAX_ATTEMPTS:
             assert forget.pending(path, queue_dir=qdir) == 1  # still retried automatically
@@ -182,9 +201,15 @@ def test_cli_run_queued_reports_residue_rather_than_claiming_success(tmp_path, c
         holder.wait()
 
     out_dir = tmp_path / "receipts"
-    exit_code = main(["run-queued", str(path), "--receipts-dir", str(out_dir)])
+    for attempt in range(10):
+        exit_code = main(["run-queued", str(path), "--receipts-dir", str(out_dir)])
+        out, err = capsys.readouterr()
+        if exit_code == 2 and "open in another process" in err and attempt < 9:
+            time.sleep(1)  # same transient lock _run_queued_retrying works around
+            continue
+        break
     assert exit_code == 1  # EXIT_RESIDUE, not 0 — nothing here claims the erasure finished
-    assert "RESIDUE_REMAINS" in capsys.readouterr().out
+    assert "RESIDUE_REMAINS" in out
     assert any(json.loads(p.read_text())["verdict"] == "RESIDUE_REMAINS" for p in out_dir.glob("*.json"))
 
 
