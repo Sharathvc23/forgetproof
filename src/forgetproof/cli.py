@@ -184,6 +184,18 @@ def cmd_key(args) -> int:
     return EXIT_CLEAN
 
 
+def cmd_mcp(args) -> int:
+    try:
+        from . import mcp_server
+    except ImportError:
+        print(red("error: the MCP server needs the mcp extra: pip install 'forgetproof[mcp]'"), file=sys.stderr)
+        return EXIT_ERROR
+    stores = [mcp_server.parse_store(spec) for spec in args.store]
+    receipts = Path(args.receipts).expanduser().resolve() if args.receipts else None
+    mcp_server.build(stores, allow_fix=args.allow_fix, receipts_dir=receipts).run()
+    return EXIT_CLEAN
+
+
 def _utf8_output() -> None:
     """Windows consoles and redirects default to a legacy code page that can't encode ✓ and ✗."""
     for stream in (sys.stdout, sys.stderr):
@@ -228,6 +240,13 @@ def main(argv: list[str] | None = None) -> int:
 
     k = sub.add_parser("key", help="show this machine's receipt signing key")
     k.set_defaults(func=cmd_key)
+
+    m = sub.add_parser("mcp", help="run an MCP server (stdio) that lets an agent scan, fix and verify named stores")
+    m.add_argument("--store", action="append", required=True, metavar="NAME=PATH_OR_URL",
+                   help="a store the agent may use (repeatable); the agent only ever sees NAME")
+    m.add_argument("--allow-fix", action="store_true", help="offer the fix_store tool (off by default)")
+    m.add_argument("--receipts", metavar="DIR", help="where fix_store writes receipts (default: next to the signing key)")
+    m.set_defaults(func=cmd_mcp)
 
     args = p.parse_args(argv)
     try:

@@ -7,12 +7,16 @@ Deletes in these stores are logical. The bytes persist in write logs, index tomb
 and unzeroed buffers until something rewrites them. `forgetproof` reads the store files directly, reports
 what is recoverable, and rewrites the store so it isn't.
 
+forgetproof comes out of stellarminds.ai's research on non-membership proofs and memory erasure for
+AI agents.
+
 ## Install
 
 ```bash
 pip install forgetproof              # scan Chroma and SQLite
 pip install 'forgetproof[chroma]'    # + fix Chroma (chromadb >= 1.0)
 pip install 'forgetproof[postgres]'  # + Postgres/pgvector
+pip install 'forgetproof[mcp]'       # + MCP server for agents
 ```
 
 Python 3.11+.
@@ -88,6 +92,29 @@ at `~/.config/forgetproof/signing_key.pem` (override with `$FORGETPROOF_HOME`).
 `verify --against <store>` rehashes and rescans the store.
 
 A receipt is an operator attestation that anyone can recheck, not a third-party audit.
+
+## MCP server
+
+Exposes forgetproof to agents over MCP (stdio). The operator names the stores; the agent can only
+refer to them by name.
+
+```bash
+forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent [--allow-fix]
+claude mcp add forgetproof -- forgetproof mcp --store memory=/srv/agent/chroma_dir   # Claude Code
+```
+
+| Tool | Effect |
+|---|---|
+| `list_stores` | Configured store names and whether fix is enabled |
+| `scan_store(store_name, canaries)` | Findings as counts, canary results by index |
+| `plan_fix(store_name)` | Steps `fix` would take; changes nothing |
+| `fix_store(store_name, canaries)` | Only with `--allow-fix`. Fixes, rescans, writes a receipt, returns its id |
+| `get_receipt(receipt_id)` / `verify_receipt(receipt_id)` | Receipt JSON; signature, file-hash and rescan check |
+
+Responses never contain canary values or samples, redacted or not. Calls on the same store are
+serialized. Chroma `fix_store` returns an error while the application has the store open, so run it
+in a maintenance window. Receipts go to `~/.config/forgetproof/receipts` (`--receipts DIR`). Pass the
+Postgres password through `PGPASSWORD` in the server's environment.
 
 ## GitHub Action
 
