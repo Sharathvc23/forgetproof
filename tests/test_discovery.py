@@ -178,9 +178,9 @@ def test_resolve_rejects_a_path_outside_the_configs_own_directory(tmp_path):
     assert discovery.resolve(pinned, root=tmp_path) == outside  # inside this wider root: fine
 
 
-def test_resolve_rejects_a_postgres_entry_naming_an_unrecognised_env_var(monkeypatch):
+def test_resolve_rejects_a_postgres_entry_naming_an_unrecognized_env_var(monkeypatch):
     monkeypatch.setenv("SOME_OTHER_SECRET", "postgresql://app@db/agent")
-    with pytest.raises(ValueError, match="recognised environment variable"):
+    with pytest.raises(ValueError, match="recognized environment variable"):
         discovery.resolve(discovery.Found("db", "postgres", "SOME_OTHER_SECRET"))
 
 

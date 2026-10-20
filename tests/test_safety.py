@@ -26,7 +26,7 @@ def snapshot(path):
 
 def same_records(a, b, cosine=False):
     """Ids, documents and metadata exactly; embeddings exactly, or for cosine to float32 rounding:
-    Chroma keeps cosine vectors normalised plus a norm, and get() rebuilds them from the two."""
+    Chroma keeps cosine vectors normalized plus a norm, and get() rebuilds them from the two."""
     assert [r[:3] for r in a] == [r[:3] for r in b]
     for x, y in zip(a, b):
         assert x[3] == (pytest.approx(y[3], rel=1e-6, abs=1e-7) if cosine else y[3]), x[0]

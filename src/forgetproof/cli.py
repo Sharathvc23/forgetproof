@@ -153,7 +153,8 @@ def cmd_fix(args) -> int:
     for a in result.actions:
         print(f"  • {a}")
     canary_results = [{"canary": c.number, "found_in": c.found_in} for c in result.after.canaries]
-    rec = receipt.issue(target, before, after, result.actions, canary_results, label=result.before.target)
+    rec = receipt.issue(target, before, after, result.actions, canary_results, label=result.before.target,
+                         correlation_id=args.correlation)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(args.receipt or f"forgetproof-receipt-{stamp}.json")
     out.write_text(json.dumps(rec, indent=2) + "\n")
@@ -199,7 +200,7 @@ def cmd_forget(args) -> int:
     target = _target(args.path)
     queue_dir = Path(args.queue_dir).expanduser().resolve() if args.queue_dir else None
     result = forget_mod.forget(target, args.subject, options=Options(allow_upgrade=args.allow_upgrade),
-                                queue_dir=queue_dir)
+                                queue_dir=queue_dir, correlation_id=args.correlation)
     if isinstance(result, forget_mod.Queued):
         print(f"{bold('queued')}: {result.target} is open elsewhere right now (Chroma can't be rewritten while "
               f"that's true).\nRun `forgetproof run-queued {args.path}` once nothing has it open, "
@@ -320,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     canary_args(f)
     f.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     f.add_argument("--receipt", metavar="FILE", help="where to write the receipt")
+    f.add_argument("--correlation", metavar="ID", help="an opaque id to carry into the receipt (e.g. a case or ticket id)")
     f.add_argument("--dry-run", action="store_true", help="show what fix would do and change nothing")
     f.add_argument("--force", action="store_true", help="skip the open-process and free-space checks")
     f.add_argument("--allow-upgrade", action="store_true",
@@ -330,6 +332,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("path")
     g.add_argument("--subject", required=True, metavar="VALUE", help="the value to erase, e.g. a user's email")
     g.add_argument("--receipt", metavar="FILE", help="where to write the receipt")
+    g.add_argument("--correlation", metavar="ID",
+                    help="an opaque id to carry into the receipt (e.g. a case or ticket id); kept even if the "
+                         "request is queued and only drains later, possibly in another process")
     g.add_argument("--queue-dir", metavar="DIR", help="where to queue an erasure that can't run yet (default: next to the signing key)")
     g.add_argument("--allow-upgrade", action="store_true",
                    help="let the installed chromadb upgrade an older store to its own format")

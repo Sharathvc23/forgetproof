@@ -168,7 +168,7 @@ def resolve(found: Found, root: Path | None = None) -> Path | str:
     if found.kind == "postgres":
         if found.where not in ENV_URL_VARS:
             raise ValueError(f"store {found.name!r} names {found.where!r}, which isn't one of the "
-                              f"recognised environment variables ({', '.join(ENV_URL_VARS)})")
+                              f"recognized environment variables ({', '.join(ENV_URL_VARS)})")
         url = os.environ.get(found.where, "")
         if not url.startswith(("postgresql://", "postgres://")):
             raise ValueError(
