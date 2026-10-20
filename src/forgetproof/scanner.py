@@ -61,7 +61,7 @@ def _spaces_in(value) -> Iterator[str]:
 
 
 def normalized_segments(conn) -> dict[str, bool]:
-    """segment id -> whether its HNSW index may be cosine (normalised), which decides whether
+    """segment id -> whether its HNSW index may be cosine (normalized), which decides whether
     length.bin holds real data. Chroma has stored the space as collection metadata (hnsw:space),
     in config_json_str and in schema_str, and they can disagree: 0.x keeps a default "l2" in its
     config and applies the metadata on top. So an index counts as l2/ip only when every setting

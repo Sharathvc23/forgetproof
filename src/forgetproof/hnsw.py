@@ -1,4 +1,4 @@
-"""Read and sanitise hnswlib index files as persisted by Chroma, without loading the index.
+"""Read and sanitize hnswlib index files as persisted by Chroma, without loading the index.
 
 Two ways these files hold data they shouldn't:
 
@@ -98,7 +98,7 @@ def read_index(segment_dir: Path, normalized: bool = True) -> HnswIndex | None:
     data_len = data_path.stat().st_size
     parsed = _parse(header_path.read_bytes(), data_len)
     if parsed is None:
-        raise ValueError(f"unrecognised HNSW header in {header_path}")
+        raise ValueError(f"unrecognized HNSW header in {header_path}")
     count, size = parsed
     deleted = 0
     if count:

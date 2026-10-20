@@ -81,7 +81,8 @@ def file_hashes(target: Path | str) -> dict[str, str]:
     return out
 
 
-def issue(target: Path | str, before: dict, after: dict, actions: list[str], canaries: list[dict], label: str | None = None) -> dict:
+def issue(target: Path | str, before: dict, after: dict, actions: list[str], canaries: list[dict], label: str | None = None,
+          correlation_id: str | None = None) -> dict:
     key = load_or_create_key()
     body = {
         "format": FORMAT,
@@ -93,6 +94,7 @@ def issue(target: Path | str, before: dict, after: dict, actions: list[str], can
         "after": after,
         "actions": actions,
         "canaries": canaries,  # per canary: where, if anywhere, it was still found; never the value or its hash
+        "correlation_id": correlation_id,  # an opaque caller-supplied label; carried through a queued forget() too
         "files": file_hashes(target),
         "public_key": public_key_b64(key),
     }

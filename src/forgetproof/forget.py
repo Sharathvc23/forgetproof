@@ -5,8 +5,9 @@ Chroma cannot — it must not be rewritten while the application still has it op
 queues the request instead of failing, encrypted at rest under a local key. Call `run_queued()`
 before the application reopens the store (its own next start is the natural point) to finish it.
 
-A queued entry holds nothing but an encrypted subject value and the store it is for. It is
-deleted once it drains *clean* — not merely once it's been tried. A subject can legitimately
+A queued entry holds nothing but an encrypted subject value, the store it is for, and the
+caller's opaque correlation id if it gave one. It is deleted once it drains *clean* — not merely
+once it's been tried. A subject can legitimately
 still be found after `fix()`: the same value can appear in another, unrelated live record that
 must not be erased. Retrying that forever won't help, so after a few attempts the entry is parked
 (kept, but no longer retried automatically) instead of either looping forever or being silently
@@ -40,6 +41,7 @@ PARK_RETENTION_DAYS = 30  # how long a parked entry is kept before run_queued() 
 class Queued:
     target: str
     queued_at: str
+    correlation_id: str | None = None
 
 
 def _label(target: Path | str) -> str:
@@ -60,19 +62,26 @@ def _queue_key(queue_dir: Path) -> Fernet:
     return Fernet(keystore.get_or_create("queue_key", queue_dir / "queue.key", Fernet.generate_key))
 
 
-def _issue(target: Path | str, result) -> dict:
+def _issue(target: Path | str, result, correlation_id: str | None = None) -> dict:
     before, after = result.before.summary(), result.after.summary()
     canaries = [{"canary": c.number, "found_in": c.found_in} for c in result.after.canaries]
-    return receipt.issue(target, before, after, result.actions, canaries, label=_label(target))
+    return receipt.issue(target, before, after, result.actions, canaries, label=_label(target),
+                          correlation_id=correlation_id)
 
 
 def forget(target: Path | str, subject: str, *, options: Options | None = None,
-           queue_dir: Path | str | None = None) -> dict | Queued:
+           queue_dir: Path | str | None = None, correlation_id: str | None = None) -> dict | Queued:
     """Erase `subject`'s data from `target` and return a signed receipt.
 
     If the store can't be rewritten right now (Chroma, with the application still holding it
     open), the request is queued instead and a `Queued` marker is returned. Call `run_queued`
     for this target before the application next opens the store to finish it.
+
+    `correlation_id`, if given, is an opaque label the caller supplies to tie this request to its
+    own record of it (a case id, a ticket number) — forgetproof never looks at it. It's carried
+    into the eventual receipt either way, including when the request is queued and only actually
+    drains, in a later process, through `run_queued()`. Keep it non-sensitive: like `target`, it's
+    stored in the queue entry and the receipt in plaintext, not encrypted like `subject` is.
     """
     try:
         result = fix(target, [subject], options or Options())
@@ -83,13 +92,14 @@ def forget(target: Path | str, subject: str, *, options: Options | None = None,
         token = _queue_key(qd).encrypt(subject.encode())
         queued_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         entry = qd / f"{uuid.uuid4().hex}.json"
-        entry.write_text(json.dumps({"target": _label(target), "subject": token.decode(), "queued_at": queued_at}))
+        entry.write_text(json.dumps({"target": _label(target), "subject": token.decode(), "queued_at": queued_at,
+                                      "correlation_id": correlation_id}))
         try:
             entry.chmod(0o600)
         except OSError:
             pass
-        return Queued(_label(target), queued_at)
-    return _issue(target, result)
+        return Queued(_label(target), queued_at, correlation_id)
+    return _issue(target, result, correlation_id=correlation_id)
 
 
 def pending(target: Path | str, *, queue_dir: Path | str | None = None) -> int:
@@ -158,7 +168,7 @@ def run_queued(target: Path | str, *, options: Options | None = None,
             continue
         subject = key.decrypt(data["subject"].encode()).decode()
         result = fix(target, [subject], options or Options())
-        rec = _issue(target, result)
+        rec = _issue(target, result, correlation_id=data.get("correlation_id"))
         receipts.append(rec)
         if rec["verdict"] == "CLEAN":
             entry.unlink()

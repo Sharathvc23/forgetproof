@@ -44,7 +44,7 @@ Resolving a bare name only ever considers a config file this user owns, isn't a 
 writable by anyone else, and stops climbing the moment an ancestor directory itself isn't owned by
 this user — so a config planted in a shared directory above where you happen to be running from
 (a bare `/tmp`, say) is never trusted. Even a config this user does trust can't point outside its
-own directory or at an unrecognised environment variable; either is refused the same way. The
+own directory or at an unrecognized environment variable; either is refused the same way. The
 ownership check is POSIX-only (Windows exposes no equivalent through Python's standard library);
 the containment and environment-variable checks hold on every platform.
 
@@ -94,7 +94,7 @@ incomplete, never clean.
 
 1. Each collection is rebuilt from live records through the chromadb API in a child process: copy,
    verify count, swap. The swap is journaled, so an interrupted run is completed or rolled back on
-   the next run. Ids, documents, metadata, embeddings and collection config are preserved; collection
+   the next run. IDs, documents, metadata, embeddings and collection config are preserved; collection
    UUIDs change.
 2. Orphaned index directories are deleted. Unused capacity and `l2`/`ip` `length.bin` are zeroed in
    place.
@@ -112,7 +112,8 @@ table, with `lock_timeout` set to 15 s.
 
 ## Receipts
 
-JSON with before/after findings, actions taken, canary results, warnings and the SHA-256 of every store
+JSON with before/after findings, actions taken, canary results, warnings, an optional caller-supplied
+`correlation_id` (`fix --correlation` / `forget --correlation`, below) and the SHA-256 of every store
 file after the fix (relation files for Postgres). Signed with Ed25519. The key is generated on first use
 at `~/.config/forgetproof/signing_key.pem` (override with `$FORGETPROOF_HOME`), or in the OS keychain
 instead with `pip install 'forgetproof[keyring]'` and `FORGETPROOF_USE_KEYRING=1` — opt in explicitly;
@@ -164,8 +165,8 @@ For an application with its own delete flow, call `forget()` instead of running 
 ```python
 from forgetproof import forget
 
-receipt = forget.forget(store, subject=user.email)   # erases now, or...
-# forget.Queued(target=..., queued_at=...) on Chroma if the app still has the store open
+receipt = forget.forget(store, subject=user.email, correlation_id=case.id)   # erases now, or...
+# forget.Queued(target=..., queued_at=..., correlation_id=...) on Chroma if the app still has the store open
 
 # at the app's next start, before it reopens the store:
 for receipt in forget.run_queued(store):
@@ -173,9 +174,16 @@ for receipt in forget.run_queued(store):
 ```
 
 ```bash
-forgetproof forget ./chroma_dir --subject user3@example.com   # or "queued: …" if Chroma is open
+forgetproof forget ./chroma_dir --subject user3@example.com --correlation case-4471  # or "queued: …" if Chroma is open
 forgetproof run-queued ./chroma_dir --receipts-dir ./receipts  # call before reopening the store
 ```
+
+`correlation_id` is an opaque label forgetproof never looks at — a case or ticket id, say — carried
+through to the receipt's `correlation_id` field either way, including when the request queues and
+only actually drains later, in a different process, through `run_queued`. Without it, a queued
+request's own receipt (and which of possibly several queued requests it was) is otherwise only
+identifiable by store and timestamp. Keep it non-sensitive: like `target`, and unlike `subject`,
+it's stored in the queue and written into the receipt in plaintext, not encrypted.
 
 A queued request is encrypted at rest under a local key (`~/.config/forgetproof/queue` by default)
 and deleted once it drains *clean* — not merely once it's been tried. A subject can legitimately

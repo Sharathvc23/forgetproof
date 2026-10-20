@@ -52,6 +52,21 @@ def test_forget_erases_the_subject_immediately_on_sqlite(tmp_path):
     assert forget.pending(db, queue_dir=tmp_path / "queue") == 0
 
 
+def test_forget_correlation_id_round_trips_into_the_receipt(tmp_path):
+    db = tmp_path / "a.db"
+    deleted = make_sqlite(db)
+    gone = email(deleted[0])
+    rec = forget.forget(db, gone, queue_dir=tmp_path / "queue", correlation_id="case-4471")
+    assert rec["correlation_id"] == "case-4471"
+
+
+def test_forget_without_a_correlation_id_still_has_the_field(tmp_path):
+    db = tmp_path / "a.db"
+    deleted = make_sqlite(db)
+    rec = forget.forget(db, email(deleted[0]), queue_dir=tmp_path / "queue")
+    assert rec["correlation_id"] is None
+
+
 @pytest.mark.fix
 def test_forget_queues_when_chroma_is_open_elsewhere(tmp_path):
     path = tmp_path / "s"
@@ -65,9 +80,10 @@ def test_forget_queues_when_chroma_is_open_elsewhere(tmp_path):
     )], stdout=subprocess.PIPE, text=True)
     try:
         assert holder.stdout.readline().strip() == "ready"
-        result = forget.forget(path, gone, queue_dir=qdir)
+        result = forget.forget(path, gone, queue_dir=qdir, correlation_id="case-4471")
         assert isinstance(result, forget.Queued)
         assert result.target == str(path.resolve())
+        assert result.correlation_id == "case-4471"
         assert forget.pending(path, queue_dir=qdir) == 1
 
         # The queue entry on disk never holds the plaintext subject.
@@ -75,6 +91,7 @@ def test_forget_queues_when_chroma_is_open_elsewhere(tmp_path):
         assert len(entries) == 1
         assert gone not in entries[0].read_text()
         assert json.loads(entries[0].read_text())["subject"] != gone
+        assert json.loads(entries[0].read_text())["correlation_id"] == "case-4471"
     finally:
         holder.kill()
         holder.wait()
@@ -82,6 +99,7 @@ def test_forget_queues_when_chroma_is_open_elsewhere(tmp_path):
     # Once nothing has the store open, run_queued finishes it and leaves no entry behind.
     receipts = _run_queued_retrying(path, queue_dir=qdir)
     assert len(receipts) == 1 and receipts[0]["verdict"] == "CLEAN"
+    assert receipts[0]["correlation_id"] == "case-4471"  # survived the queue, into a later process
     assert forget.pending(path, queue_dir=qdir) == 0
     assert not any(gone.encode() in p.read_bytes() for p in path.rglob("*") if p.is_file())
 
@@ -218,8 +236,9 @@ def test_cli_forget_and_run_queued(tmp_path):
     deleted = make_sqlite(db)
     gone = email(deleted[0])
     rec = tmp_path / "r.json"
-    assert main(["forget", str(db), "--subject", gone, "--receipt", str(rec)]) == 0
+    assert main(["forget", str(db), "--subject", gone, "--receipt", str(rec), "--correlation", "case-4471"]) == 0
     assert json.loads(rec.read_text())["verdict"] == "CLEAN"
+    assert json.loads(rec.read_text())["correlation_id"] == "case-4471"
 
     out_dir = tmp_path / "out"
     assert main(["run-queued", str(db), "--receipts-dir", str(out_dir)]) == 0  # nothing queued

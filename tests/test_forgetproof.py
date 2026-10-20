@@ -145,12 +145,14 @@ def test_cli_end_to_end_and_receipt_tamper_detection(tmp_path, capsys):
     make_chroma(path, 300)
     rec_path = tmp_path / "r.json"
     assert main(["scan", str(path)]) == 1
-    assert main(["fix", str(path), "--yes", "--receipt", str(rec_path), "--canary", email(0)]) == 0
+    assert main(["fix", str(path), "--yes", "--receipt", str(rec_path), "--canary", email(0),
+                 "--correlation", "case-4471"]) == 0
     assert main(["scan", str(path)]) == 0
     assert main(["verify", str(rec_path), "--against", str(path)]) == 0
 
     rec = json.loads(rec_path.read_text())
     assert rec["verdict"] == "CLEAN" and "@example.com" not in rec_path.read_text()
+    assert rec["correlation_id"] == "case-4471"
     rec["after"]["clean"] = False
     tampered = tmp_path / "t.json"
     tampered.write_text(json.dumps(rec))
