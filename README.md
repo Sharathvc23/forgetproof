@@ -212,9 +212,9 @@ built to help with erasure requests shouldn't itself become an unbounded record 
 
 Writes a counts-only job summary. Outputs: `clean`, `exit-code`.
 
-## Security defaults
+## Defaults
 
-These hold without any configuration, and a test (`test_no_network.py`) guards the first one:
+Without any configuration — a test (`test_no_network.py`) checks the first one:
 
 - **Nothing phones home.** forgetproof never imports a generic network client and makes no request
   except to the database you pointed it at. There's no telemetry to turn off.
