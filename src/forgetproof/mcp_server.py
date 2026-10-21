@@ -49,8 +49,10 @@ _COOLDOWN = 1.0  # seconds between subject-scoped calls on the same store, to bl
 
 
 def _read_trustworthy(path: Path) -> str:
-    """Read `path` only if its directory and the file itself are each owned by this process's own
-    user, not symlinks, and not writable by anyone else. Both are opened with openat-style directory
+    """Read `path` only if its directory and the file itself are each owned by root or by this
+    process's own user (the rule OpenSSH applies to the path to authorized_keys: a root-owned
+    directory that nobody else can write to is the normal place for a service's runtime files), not
+    symlinks, and not writable by anyone else. Both are opened with openat-style directory
     file descriptors (the file is opened by name *inside* the already-opened, already-checked parent
     directory fd) so nothing between the two checks and the read can be swapped out from under them —
     including the parent directory being used to unlink and recreate the file in place. The file is
@@ -68,7 +70,7 @@ def _read_trustworthy(path: Path) -> str:
             return ""
 
     def trustworthy(st: os.stat_result) -> bool:
-        return st.st_uid == os.getuid() and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        return st.st_uid in (0, os.getuid()) and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
     dir_fd = file_fd = None
     try:
