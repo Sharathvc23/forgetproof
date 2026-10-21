@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -137,6 +138,26 @@ def test_check_if_forgotten_refuses_a_subject_file_replaced_by_a_symlink(tmp_pat
     except OSError:
         pytest.skip("no symlink privilege on this runner")
     assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
+
+
+def test_check_if_forgotten_does_not_hang_on_a_fifo_at_the_subject_path(tmp_path):
+    """A FIFO planted at the subject path must be rejected, not block the call (and the store
+    lock along with it) waiting for a writer that will never come."""
+    make_sqlite(tmp_path / "a.db")
+    subj = tmp_path / "subject"
+    try:
+        os.mkfifo(subj)
+    except (AttributeError, OSError):
+        pytest.skip("no FIFO support on this runner")
+    server = build([Store("chat", tmp_path / "a.db")], subject_file=subj)
+
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.__setitem__(
+        "error", error(call(server, "check_if_forgotten", store_name="chat"))), daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "check_if_forgotten hung instead of rejecting the FIFO"
+    assert "no user is currently identified" in result["error"]
 
 
 def test_agent_can_only_reach_configured_stores(tmp_path):

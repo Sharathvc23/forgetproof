@@ -49,28 +49,44 @@ _COOLDOWN = 1.0  # seconds between subject-scoped calls on the same store, to bl
 
 
 def _read_trustworthy(path: Path) -> str:
-    """Read `path` only if it's a regular file owned by this process's own user, not a symlink,
-    and not writable by anyone else — checked on the exact file description read from, so nothing
-    can be swapped in between the check and the read. Returns "" if the file is missing, empty, or
-    fails the check, same as a missing subject: the caller can't tell those apart, which keeps the
-    check itself from becoming a side channel."""
+    """Read `path` only if its directory and the file itself are each owned by this process's own
+    user, not symlinks, and not writable by anyone else. Both are opened with openat-style directory
+    file descriptors (the file is opened by name *inside* the already-opened, already-checked parent
+    directory fd) so nothing between the two checks and the read can be swapped out from under them —
+    including the parent directory being used to unlink and recreate the file in place. The file is
+    also opened non-blocking and rejected unless it's a regular file with exactly one link, so a FIFO
+    or a hardlink planted at the path can't hang the call (and the store lock along with it) or stand
+    in for a file we've otherwise decided to trust. Returns "" if the file is missing, empty, or fails
+    any of this, same as a missing subject: the caller can't tell those apart, which keeps the check
+    itself from becoming a side channel."""
     if not hasattr(os, "getuid"):
         try:
             return path.read_text().strip()  # no POSIX ownership/symlink model to check (Windows)
         except OSError:
             return ""
+
+    def trustworthy(st: os.stat_result) -> bool:
+        return st.st_uid == os.getuid() and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+    dir_fd = file_fd = None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if not trustworthy(os.fstat(dir_fd)):
+            return ""
+        file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC,
+                           dir_fd=dir_fd)
+        st = os.fstat(file_fd)
+        if not (stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and trustworthy(st)):
+            return ""
+        os.set_blocking(file_fd, True)
+        return os.read(file_fd, 1 << 20).decode(errors="replace").strip()
     except OSError:
         return ""
-    try:
-        st = os.fstat(fd)
-        if not (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
-                and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
-            return ""
-        return os.read(fd, 1 << 20).decode(errors="replace").strip()
     finally:
-        os.close(fd)
+        if file_fd is not None:
+            os.close(file_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 INSTRUCTIONS = """\
@@ -272,10 +288,11 @@ def build(stores: list[Store], allow_fix: bool = False, receipts_dir: Path | Non
             """Check whether the current user (identified by the operator, not by you) still has
             recoverable data in a store."""
             s = store(store_name)
+            subject = current_subject()  # before the lock: a slow or hung read can't hold up this store
             lock = exclusive(s.name)
             try:
                 cooldown(s.name)
-                r = scan(s.target, [current_subject()])
+                r = scan(s.target, [subject])
                 return {"forgotten": not r.canaries[0].found_in, "store_type": r.store, "incomplete": r.incomplete}
             except _EXPECTED as e:
                 raise ToolError(str(e)) from None
@@ -319,10 +336,11 @@ def build(stores: list[Store], allow_fix: bool = False, receipts_dir: Path | Non
                 store open; it completes at the application's next start, before it reopens the store.
                 """
                 s = store(store_name)
+                subject = current_subject()  # before the lock: a slow or hung read can't hold up this store
                 lock = exclusive(s.name)
                 try:
                     cooldown(s.name)
-                    result = forget_mod.forget(s.target, current_subject(), queue_dir=queue_dir)
+                    result = forget_mod.forget(s.target, subject, queue_dir=queue_dir)
                     if isinstance(result, forget_mod.Queued):
                         return {"queued": True, "done": False, "queued_at": result.queued_at}
                     return {
