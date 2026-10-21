@@ -10,7 +10,9 @@ Initial release.
 - Ed25519-signed receipts; `verify`, `key`.
 - MCP server (`forgetproof mcp`, `[mcp]` extra): scan, plan, fix (opt-in) and verify for named stores.
   Subject-scoped `check_if_forgotten` / `forget_me`, gated on `--subject-file`, so the agent itself can
-  never name a value to look up or erase. No tool exposes a value-matching parameter to the agent.
+  never name a value to look up or erase. No tool exposes a value-matching parameter to the agent. The
+  subject file is only read if it, and its directory, are owned by root or the server's own user, aren't
+  symlinks and aren't writable by anyone else (POSIX; on Windows only the symlink check applies).
 - `forget()` / `forgetproof forget` / `forgetproof run-queued`: erase one subject's data immediately,
   or queue it (encrypted at rest) when the store can't be rewritten yet, to finish at the
   application's next start before it reopens the store. A queued entry is kept and retried, not

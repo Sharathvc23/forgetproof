@@ -124,6 +124,21 @@ def test_check_if_forgotten_refuses_a_world_writable_subject_file(tmp_path):
     assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid") or os.getuid() == 0,
+                    reason="the ownership check is POSIX-only, and root owns everything it reads")
+def test_check_if_forgotten_refuses_a_subject_file_owned_by_someone_else(tmp_path, monkeypatch):
+    """Simulated by making the server believe it runs as a different (non-root) user than the one
+    that owns the file and its directory."""
+    make_sqlite(tmp_path / "a.db")
+    subj = tmp_path / "subject"
+    subj.write_text("never-stored@example.com")
+    server = build([Store("chat", tmp_path / "a.db")], subject_file=subj)
+    assert ok(call(server, "check_if_forgotten", store_name="chat"))["forgotten"] is True  # sanity: trusted as-is
+    time.sleep(1.1)  # past the per-store cooldown
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(subj).st_uid + 1)
+    assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
+
+
 def test_check_if_forgotten_refuses_a_subject_file_replaced_by_a_symlink(tmp_path):
     make_sqlite(tmp_path / "a.db")
     subj = tmp_path / "subject"

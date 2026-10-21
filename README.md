@@ -131,9 +131,11 @@ Exposes forgetproof to agents over MCP (stdio). The operator names the stores; t
 refer to them by name, and can never name a value to look up or erase — it has no `canaries`
 parameter anywhere. The one value a subject-scoped call acts on comes from `--subject-file`, a
 file the operator's application keeps current with whoever is signed in; the agent cannot set it.
-forgetproof refuses to read it unless it's a regular file owned by the account the server itself
-runs as, not a symlink, and not writable by anyone else — so another local user or process can't
-redirect who `forget_me` acts for, or use `check_if_forgotten` to probe an arbitrary value.
+forgetproof refuses to read it unless it, and the directory it's in, are owned by root or by the
+account the server itself runs as, aren't symlinks, and aren't writable by anyone else — so another
+local user or process can't redirect who `forget_me` acts for, or use `check_if_forgotten` to probe
+an arbitrary value. (The ownership and writability checks are POSIX-only; on Windows only the symlink
+check applies.)
 
 ```bash
 forgetproof mcp --store memory=./chroma_dir --store pg=postgresql://app@db:5432/agent \
