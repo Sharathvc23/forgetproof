@@ -86,7 +86,7 @@ incomplete, never clean.
 
 ## Fix
 
-`--dry-run` prints the plan without changing anything.
+`fix` rewrites the store in place with no undo, and keeps no backup (one would defeat the erasure; make your own first if you need it). It asks before proceeding unless you pass `--yes`; `--dry-run` prints the plan without changing anything.
 
 **Chroma.** Preflight refuses to run if another process has the store open, if free disk is below
 2× store size, or if the installed `chromadb` would migrate the store schema (override with
@@ -101,8 +101,7 @@ incomplete, never clean.
 3. Write-log rows for dropped collections are deleted, then `VACUUM` runs with `secure_delete=ON`.
 4. The store is rescanned and a receipt is issued.
 
-No backup is kept. Stop the application first: Chroma caches store state per process and may write it
-back.
+Stop the application first: Chroma caches store state per process and may write it back.
 
 **Postgres.** `VACUUM (FULL, ANALYZE)` on every table with a `vector`, `halfvec` or `sparsevec` column,
 then `pg_switch_wal()` and `CHECKPOINT`. Requires table ownership. Takes an `ACCESS EXCLUSIVE` lock per
