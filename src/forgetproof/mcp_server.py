@@ -59,9 +59,11 @@ def _read_trustworthy(path: Path) -> str:
     in for a file we've otherwise decided to trust. Returns "" if the file is missing, empty, or fails
     any of this, same as a missing subject: the caller can't tell those apart, which keeps the check
     itself from becoming a side channel."""
+    if path.is_symlink():  # cross-platform; the ownership/writability checks below are POSIX-only
+        return ""
     if not hasattr(os, "getuid"):
         try:
-            return path.read_text().strip()  # no POSIX ownership/symlink model to check (Windows)
+            return path.read_text().strip()  # no POSIX ownership/writability model to check (Windows)
         except OSError:
             return ""
 
