@@ -9,6 +9,9 @@ The agent can never name an arbitrary value to check or erase — that would tur
 tool for looking people up ("is bob@example.com still in here?"). The one value a `forget_me`
 or `check_if_forgotten` call acts on is read from --subject-file, which only the operator's
 application controls and refreshes (typically with the identity of whoever is signed in).
+forgetproof refuses to read it unless it's a regular file owned by this process's own user, not a
+symlink, and not writable by anyone else — otherwise another local user or process could redirect
+who `forget_me` acts for, or use it as a side channel to probe whether an arbitrary value is stored.
 Generic `scan_store` reports counts only, never whether a specific value is present.
 
 `fix` is not offered unless --allow-fix is given. Responses carry counts only: no samples
@@ -18,8 +21,10 @@ Generic `scan_store` reports counts only, never whether a specific value is pres
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -41,6 +46,32 @@ STORE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 RECEIPT_ID = re.compile(r"^([A-Za-z0-9_-]{1,64})\.(\d{8}T\d{12}Z)$")
 _EXPECTED = (UnsupportedStore, FixError, postgres.PostgresError, ValueError, OSError, sqlite3.DatabaseError)
 _COOLDOWN = 1.0  # seconds between subject-scoped calls on the same store, to blunt rapid probing
+
+
+def _read_trustworthy(path: Path) -> str:
+    """Read `path` only if it's a regular file owned by this process's own user, not a symlink,
+    and not writable by anyone else — checked on the exact file description read from, so nothing
+    can be swapped in between the check and the read. Returns "" if the file is missing, empty, or
+    fails the check, same as a missing subject: the caller can't tell those apart, which keeps the
+    check itself from becoming a side channel."""
+    if not hasattr(os, "getuid"):
+        try:
+            return path.read_text().strip()  # no POSIX ownership/symlink model to check (Windows)
+        except OSError:
+            return ""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return ""
+    try:
+        st = os.fstat(fd)
+        if not (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+                and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            return ""
+        return os.read(fd, 1 << 20).decode(errors="replace").strip()
+    finally:
+        os.close(fd)
+
 
 INSTRUCTIONS = """\
 forgetproof checks whether deleted data is really gone from a memory store's files on disk.
@@ -129,10 +160,7 @@ def build(stores: list[Store], allow_fix: bool = False, receipts_dir: Path | Non
                 "this server wasn't started with --subject-file, so it has no signed-in user to act for. "
                 "The operator's application sets that file to the current user's identity; the agent cannot."
             )
-        try:
-            value = subject_path.read_text().strip()
-        except OSError:
-            value = ""
+        value = _read_trustworthy(subject_path)
         if not value:
             raise ToolError("no user is currently identified right now (the subject file is missing or empty)")
         return value

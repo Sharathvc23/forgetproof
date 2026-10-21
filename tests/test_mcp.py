@@ -113,6 +113,32 @@ def test_check_if_forgotten_requires_a_configured_subject(tmp_path):
     assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="the ownership/writability check is POSIX-only")
+def test_check_if_forgotten_refuses_a_world_writable_subject_file(tmp_path):
+    make_sqlite(tmp_path / "a.db")
+    subj = tmp_path / "subject"
+    subj.write_text(email(0))
+    subj.chmod(0o666)
+    server = build([Store("chat", tmp_path / "a.db")], subject_file=subj)
+    assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
+
+
+def test_check_if_forgotten_refuses_a_subject_file_replaced_by_a_symlink(tmp_path):
+    make_sqlite(tmp_path / "a.db")
+    subj = tmp_path / "subject"
+    subj.write_text(email(0))
+    server = build([Store("chat", tmp_path / "a.db")], subject_file=subj)  # resolved while still a real file
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text(email(1))
+    subj.unlink()
+    try:
+        subj.symlink_to(elsewhere)
+    except OSError:
+        pytest.skip("no symlink privilege on this runner")
+    assert "no user is currently identified" in error(call(server, "check_if_forgotten", store_name="chat"))
+
+
 def test_agent_can_only_reach_configured_stores(tmp_path):
     make_sqlite(tmp_path / "a.db")
     make_sqlite(tmp_path / "other.db")
